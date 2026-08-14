@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cylunex/shadow-app/docs/module.schema.json",
+  "title": "Shadow App module catalog",
+  "type": "object",
+  "required": ["schemaVersion", "modules"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "modules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/module" }
+    }
+  },
+  "$defs": {
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "name", "description", "startPath", "healthPath",
+        "icon", "color", "enabled", "capabilities"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "description": { "type": "string", "maxLength": 80 },
+        "startPath": { "type": "string", "pattern": "^/" },
+        "healthPath": { "type": "string", "pattern": "^$|^/" },
+        "icon": { "enum": ["heart", "chart", "web"] },
+        "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "enabled": { "type": "boolean" },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["web", "health.scale", "health.samsung", "notification"]
+          }
+        }
+      }
+    }
+  }
+}

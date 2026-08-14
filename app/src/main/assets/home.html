@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Shadow</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui,-apple-system,"Noto Sans SC",sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; color: #e2e8f0; background:
+      radial-gradient(circle at 85% 10%, #17314d 0, transparent 34%), #07111f; }
+    main { max-width: 760px; margin: 0 auto; padding: 34px 20px 48px; }
+    .eyebrow { color: #38bdf8; font-size: 12px; font-weight: 700; letter-spacing: .16em; }
+    h1 { margin: 8px 0 6px; font-size: 34px; letter-spacing: -.04em; }
+    .lead { margin: 0 0 28px; color: #94a3b8; line-height: 1.65; }
+    .grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+    .card { appearance: none; text-align: left; color: inherit; background: rgba(15,23,42,.86);
+      border: 1px solid rgba(148,163,184,.16); border-radius: 18px; padding: 18px;
+      box-shadow: 0 16px 38px rgba(0,0,0,.18); min-height: 154px; }
+    .card:active { transform: scale(.985); }
+    .icon { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center;
+      font-size: 23px; margin-bottom: 20px; background: color-mix(in srgb,var(--accent) 24%,transparent); }
+    .name { font-size: 20px; font-weight: 750; margin-bottom: 7px; }
+    .desc { color: #94a3b8; font-size: 13px; line-height: 1.5; }
+    .empty { border: 1px dashed #334155; border-radius: 16px; color: #94a3b8; padding: 24px; }
+    .config { margin-top: 24px; width: 100%; border: 1px solid #334155; border-radius: 12px;
+      color: #cbd5e1; background: transparent; padding: 12px; font-weight: 650; }
+    @media (max-width: 480px) { .grid { grid-template-columns: 1fr; } .card { min-height: 134px; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">SHADOW WORKSPACE</div>
+  <h1>应用中心</h1>
+  <p class="lead">一个入口，访问各自独立运行的服务。</p>
+  <section id="modules" class="grid"></section>
+  <button class="config" onclick="ShellBridge.openSettings()">连接设置</button>
+</main>
+<script>
+  const symbols = { heart: '♥', chart: '⌁', web: '◇' };
+  function render() {
+    let modules = [];
+    try { modules = JSON.parse(ShellBridge.getModules()); } catch (_) {}
+    const root = document.getElementById('modules');
+    if (!modules.length) {
+      root.innerHTML = '<div class="empty">尚未接入应用</div>';
+      return;
+    }
+    root.innerHTML = modules.map(m => `
+      <button class="card" style="--accent:${m.color}" onclick="ShellBridge.openModule('${m.id}')">
+        <div class="icon" style="color:${m.color}">${symbols[m.icon] || symbols.web}</div>
+        <div class="name">${escapeHtml(m.name)}</div>
+        <div class="desc">${escapeHtml(m.description)}</div>
+      </button>`).join('');
+  }
+  function escapeHtml(value) {
+    const node = document.createElement('span'); node.textContent = value || ''; return node.innerHTML;
+  }
+  render();
+</script>
+</body>
+</html>

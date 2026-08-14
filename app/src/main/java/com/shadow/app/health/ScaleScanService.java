@@ -1,0 +1,660 @@
+package com.shadow.app.health;
+
+import com.shadow.app.MainActivity;
+import com.shadow.app.R;
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
+import android.os.Build;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.os.ParcelUuid;
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * 小米体脂秤 2（XMTZC05HM）与 S400（MJTZC01YM）BLE 前台监听服务。
+ *
+ * 秤每次测量通过 BLE Service Data（UUID 0x181B）广播体重/阻抗/RTC 时间，
+ * 无需配对。本服务常驻低功耗扫描，测量稳定后 POST 到 shadow-health 的
+ * /api/ingest/miscale（Bearer token 与 NAS 网关共用）；服务端按
+ * (RTC 时间戳 + 体重) 去重，和 NAS 网关同时在线也只记一条。
+ *
+ * 协议与 gateway/miscale_listener.py 完全一致：
+ *   [0] 单位 0x02=kg(×0.005)；非 kg 帧跳过（换算系数无法可靠验证）
+ *   [1] 标志 bit1=带阻抗 bit5=已稳定 bit7=离秤
+ *   [2:4] 年(LE) [4]月 [5]日 [6]时 [7]分 [8]秒（秤 RTC，本地时间）
+ *   [9:11] 阻抗Ω(LE, 0<z<3000 有效)  [11:13] 体重原始值(LE)
+ *
+ * 两种运行模式：
+ *   - 常驻（连接设置勾选「后台监听体脂秤」）：START_STICKY，永不自停
+ *   - 称重模式（EXTRA_TIMED，页面按钮触发）：监听 TIMED_SCAN_MS 后自动 stopSelf，
+ *     START_NOT_STICKY——不想要常驻通知的人按需点一下即可
+ */
+public class ScaleScanService extends Service {
+
+    private static final String TAG = "ScaleScan";
+    private static final String CHANNEL_ID = "miscale";
+    private static final int NOTIFICATION_ID = 1001;
+    /** 限时称重模式：boolean extra；常驻时临时提速，结束后降回低功耗扫描。 */
+    public static final String EXTRA_TIMED = "timed";
+    public static final long TIMED_SCAN_MS = 3 * 60_000;
+    private ParcelUuid uuidBodyComposition;
+    private ParcelUuid uuidMibeacon;
+
+    /** 一次测量连播多帧：先纯体重、后带阻抗；等这个窗口再上报，避免丢阻抗。 */
+    private static final long SETTLE_MS = 12_000;
+    /** 已上报测量的去重缓存保留时长。 */
+    private static final long SENT_TTL_MS = 600_000;
+    /** 上报失败的本地补发队列（SharedPreferences JSON 数组）：秤广播只持续一两分钟，
+     * 重试窗口（约 12s）内服务端恰在重启就永久丢测量——落盘后服务恢复即补发，
+     * 服务端按 (秤时间戳+体重) 去重，重放幂等。 */
+    private static final String KEY_QUEUE = "miscale_queue";
+    private static final int QUEUE_MAX = 200;
+
+    private BluetoothLeScanner scanner;
+    private ScanCallback scanCallback;
+    private int activeScanMode = -1;
+    /** true=用户刚点了开秤，短时高占空比；false=常驻后台低功耗。 */
+    private boolean measurementMode;
+    private boolean keepAlive;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    // pending/sent 只在主线程访问：BLE 回调与 IO 回调统一 handler.post 回主线程
+    private final Map<String, Measurement> pending = new HashMap<>();
+    /** S400 按设备合并「体重+低频阻抗」首帧与「高频阻抗」末帧。 */
+    private final Map<String, Measurement> s400Pending = new HashMap<>();
+    private final Map<String, Long> sent = new HashMap<>();
+    private long lastBindkeyWarningMs;
+    private volatile boolean stopped;
+    private BroadcastReceiver btStateReceiver;
+
+    private static class Measurement {
+        final String key;
+        final String tsIso;
+        final double weightKg;
+        Double impedance;   // 旧秤阻抗 / S400 50kHz 低频阻抗
+        Double impedanceHigh;
+        Integer heartRate;
+        Integer profileId;
+        String model;
+        final Runnable flush;
+
+        Measurement(String key, String tsIso, double weightKg, Double impedance, Runnable flush) {
+            this.key = key;
+            this.tsIso = tsIso;
+            this.weightKg = weightKg;
+            this.impedance = impedance;
+            this.model = "XMTZC05HM";
+            this.flush = flush;
+        }
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        uuidBodyComposition =
+                ParcelUuid.fromString("0000181b-0000-1000-8000-00805f9b34fb");
+        uuidMibeacon =
+                ParcelUuid.fromString("0000fe95-0000-1000-8000-00805f9b34fb");
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_ID, "体脂秤监听", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("后台接收体脂秤蓝牙广播");
+            nm.createNotificationChannel(ch);
+        }
+        // 跟随蓝牙开关：启动时蓝牙没开，开启后自动开扫（系统受保护广播，无导出要求）
+        btStateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1);
+                if (state == BluetoothAdapter.STATE_ON) {
+                    startScan(measurementMode);
+                    updateNotification("等待上秤…");
+                } else if (state == BluetoothAdapter.STATE_TURNING_OFF
+                        || state == BluetoothAdapter.STATE_OFF) {
+                    stopScan();
+                    updateNotification("蓝牙未开启");
+                }
+            }
+        };
+        registerReceiver(btStateReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
+    }
+
+    private final Runnable finishMeasurementMode = () -> {
+        measurementMode = false;
+        if (keepAlive) {
+            // 常驻开关开启时只降回低功耗，不停止整个服务。
+            restartScan(false);
+            updateNotification("等待上秤…");
+        } else {
+            stopSelf();
+        }
+    };
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        SharedPreferences prefs = getSharedPreferences("shell", MODE_PRIVATE);
+        keepAlive = prefs.getBoolean("scale_scan_enabled", false);
+        boolean requestedMeasurement = intent != null
+                && intent.getBooleanExtra(EXTRA_TIMED, false);
+        measurementMode = requestedMeasurement;
+
+        Notification n = buildNotification(
+                requestedMeasurement
+                        ? "称重模式：" + (TIMED_SCAN_MS / 60_000) + " 分钟内上秤即记"
+                        : "等待上秤…");
+        startForeground(NOTIFICATION_ID, n,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        handler.removeCallbacks(finishMeasurementMode);
+        if (requestedMeasurement) {
+            // 每次点击都重建扫描。三星系统偶尔会留下“仍在运行但收不到广播”的会话，
+            // 原实现因 scanCallback != null 直接返回，用户重复点击实际没有重试。
+            restartScan(true);
+            handler.postDelayed(finishMeasurementMode, TIMED_SCAN_MS);
+        } else {
+            startScan(false);
+        }
+        // 上次失败积压的测量：服务启动即尝试补发（探测可达服务器在 IO 线程做）
+        final String token = prefs.getString("ingest_token", "");
+        if (!HealthServerConfig.active(this).isEmpty() && !token.isEmpty()) {
+            io.execute(() -> {
+                String server = HealthServerConfig.resolveOrActive(ScaleScanService.this);
+                if (!server.isEmpty()) {
+                    drainQueue(server, token);
+                }
+            });
+        }
+        // 称重模式不复活：系统回收后自动拉起一个没人等的监听没有意义
+        return keepAlive ? START_STICKY : START_NOT_STICKY;
+    }
+
+    private Notification buildNotification(String text) {
+        Intent open = new Intent(this, MainActivity.class);
+        PendingIntent pi = PendingIntent.getActivity(
+                this, 0, open, PendingIntent.FLAG_IMMUTABLE);
+        return new Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("体脂秤监听中")
+                .setContentText(text)
+                .setSmallIcon(R.drawable.ic_stat_shadow)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .build();
+    }
+
+    private void updateNotification(String text) {
+        if (stopped) {
+            return;  // onDestroy 后的 in-flight 回调不得复活常驻通知
+        }
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        nm.notify(NOTIFICATION_ID, buildNotification(text));
+    }
+
+    // ---- BLE 扫描 ------------------------------------------------------------
+
+    /** 按需称重用最高占空比；常驻后台仍用低功耗，避免长期耗电。 */
+    static int scanModeFor(boolean measurementMode) {
+        return measurementMode
+                ? ScanSettings.SCAN_MODE_LOW_LATENCY
+                : ScanSettings.SCAN_MODE_LOW_POWER;
+    }
+
+    private void restartScan(boolean highDutyCycle) {
+        stopScan();
+        startScan(highDutyCycle);
+    }
+
+    @SuppressLint("MissingPermission") // guarded by hasScanPermission() immediately below
+    private void startScan(boolean highDutyCycle) {
+        if (!hasScanPermission()) {
+            updateNotification("缺少蓝牙扫描权限");
+            return;
+        }
+        int requestedMode = scanModeFor(highDutyCycle);
+        if (scanCallback != null) {
+            if (activeScanMode == requestedMode) {
+                return; // 已按所需模式在扫
+            }
+            stopScan();
+        }
+        BluetoothManager bm = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        BluetoothAdapter adapter = bm == null ? null : bm.getAdapter();
+        if (adapter == null || !adapter.isEnabled()) {
+            updateNotification("蓝牙未开启");
+            return;
+        }
+        scanner = adapter.getBluetoothLeScanner();
+        if (scanner == null) {
+            updateNotification("蓝牙不可用");
+            return;
+        }
+
+        scanCallback = new ScanCallback() {
+            @Override
+            public void onScanResult(int callbackType, ScanResult result) {
+                if (result == null || result.getScanRecord() == null) {
+                    return;
+                }
+                byte[] data = result.getScanRecord().getServiceData(uuidBodyComposition);
+                if (data != null) {
+                    handler.post(() -> handleFrame(data));  // 状态统一主线程访问
+                }
+                byte[] s400 = result.getScanRecord().getServiceData(uuidMibeacon);
+                if (s400 != null && result.getDevice() != null) {
+                    String address = result.getDevice().getAddress();
+                    handler.post(() -> handleS400Frame(address, s400));
+                }
+            }
+
+            @Override
+            public void onScanFailed(int errorCode) {
+                Log.w(TAG, "scan failed: " + errorCode);
+                updateNotification("扫描失败（" + errorCode + "），重试开秤");
+                // 系统已经终止本次扫描；清状态才能让再次点击真正重建会话。
+                if (ScaleScanService.this.scanCallback == this) {
+                    ScaleScanService.this.scanCallback = null;
+                    ScaleScanService.this.scanner = null;
+                    activeScanMode = -1;
+                }
+            }
+        };
+
+        // 按 0x181B/0xFE95 Service Data 过滤；按需称重是三分钟的前台服务，使用
+        // LOW_LATENCY + AGGRESSIVE 尽量收全 S400 的短时多帧。常驻监听仍 LOW_POWER。
+        ScanSettings settings = new ScanSettings.Builder()
+                .setScanMode(requestedMode)
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setReportDelay(0)
+                .build();
+        try {
+            List<ScanFilter> filters = new ArrayList<>();
+            filters.add(new ScanFilter.Builder()
+                    .setServiceData(uuidBodyComposition, new byte[0])
+                    .build());
+            filters.add(new ScanFilter.Builder()
+                    .setServiceData(uuidMibeacon, new byte[0])
+                    .build());
+            scanner.startScan(filters, settings, scanCallback);
+            activeScanMode = requestedMode;
+        } catch (Exception e) {
+            Log.w(TAG, "filtered scan failed, fallback to unfiltered", e);
+            try {
+                scanner.startScan(null, settings, scanCallback);
+                activeScanMode = requestedMode;
+            } catch (Exception e2) {
+                Log.e(TAG, "startScan failed", e2);
+                updateNotification("无扫描权限或蓝牙异常");
+                scanCallback = null;
+                scanner = null;
+                activeScanMode = -1;
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission") // guarded by hasScanPermission() before stopScan
+    private void stopScan() {
+        if (scanner != null && scanCallback != null && hasScanPermission()) {
+            try {
+                scanner.stopScan(scanCallback);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        scanCallback = null;
+        scanner = null;
+        activeScanMode = -1;
+    }
+
+    private boolean hasScanPermission() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            return checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    // ---- 帧处理（与 NAS 网关同款去抖/去重） -----------------------------------
+
+    private void handleS400Frame(String address, byte[] data) {
+        SharedPreferences prefs = getSharedPreferences("shell", MODE_PRIVATE);
+        String bindkey = prefs.getString(HealthFeature.KEY_SCALE_BINDKEY, "");
+        XiaomiScaleParser.S400Frame frame =
+                XiaomiScaleParser.parseS400(data, address, bindkey);
+        if (frame == null) {
+            if (XiaomiScaleParser.isS400(data)
+                    && System.currentTimeMillis() - lastBindkeyWarningMs > 30_000) {
+                lastBindkeyWarningMs = System.currentTimeMillis();
+                updateNotification("检测到 S400：请在连接设置填写正确的 BLE bindkey");
+            }
+            return;
+        }
+        String deviceKey = address.toUpperCase(Locale.US);
+        if (frame.reset) {
+            Measurement old = s400Pending.get(deviceKey);
+            if (old != null) {
+                handler.removeCallbacks(old.flush);
+                // 已拿到稳定体重/低频阻抗就是真实测量。高频末帧可能被低功耗扫描
+                // 漏掉，离秤复位时应提交已有数据，不能像旧实现一样整次删除。
+                flushS400(deviceKey);
+            }
+            return;
+        }
+        cleanupSent();
+        if (frame.weightKg != null) {
+            Calendar cal = Calendar.getInstance();
+            cal.set(Calendar.SECOND, 0);
+            cal.set(Calendar.MILLISECOND, 0);
+            String tsIso = String.format(Locale.US, "%04d-%02d-%02dT%02d:%02d:%02d",
+                    cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1,
+                    cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.HOUR_OF_DAY),
+                    cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND));
+            String key = String.format(Locale.US, "%s-%d",
+                    tsIso.replaceAll("[-:]", ""), Math.round(frame.weightKg * 200));
+            if (sent.containsKey(key)) {
+                return;
+            }
+            Measurement previous = s400Pending.remove(deviceKey);
+            if (previous != null) {
+                handler.removeCallbacks(previous.flush);
+            }
+            Runnable flush = () -> flushS400(deviceKey);
+            Measurement m = new Measurement(
+                    key, tsIso, frame.weightKg, frame.impedanceLow, flush);
+            m.heartRate = frame.heartRate;
+            m.profileId = frame.profileId;
+            m.model = "MJTZC01YM/S400";
+            s400Pending.put(deviceKey, m);
+            handler.postDelayed(flush, SETTLE_MS);
+            return;
+        }
+        if (frame.impedanceHigh != null) {
+            Measurement m = s400Pending.get(deviceKey);
+            if (m != null && m.profileId != null && m.profileId == frame.profileId) {
+                m.impedanceHigh = frame.impedanceHigh;
+                handler.removeCallbacks(m.flush);
+                flushS400(deviceKey);
+            }
+        }
+    }
+
+    private void flushS400(String deviceKey) {
+        Measurement m = s400Pending.remove(deviceKey);
+        if (m == null) {
+            return;
+        }
+        pending.put(m.key, m);
+        flushMeasurement(m.key);
+    }
+
+    private void cleanupSent() {
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<String, Long>> it = sent.entrySet().iterator();
+        while (it.hasNext()) {
+            if (now - it.next().getValue() > SENT_TTL_MS) {
+                it.remove();
+            }
+        }
+    }
+
+    private void handleFrame(byte[] d) {
+        if (d.length != 13) {
+            return;
+        }
+        int unit = d[0] & 0xFF;
+        int fl = d[1] & 0xFF;
+        boolean stabilized = (fl & 0x20) != 0;
+        boolean loadRemoved = (fl & 0x80) != 0;
+        boolean hasImpedance = (fl & 0x02) != 0;
+        if (!stabilized || loadRemoved) {
+            return;
+        }
+
+        int rawWeight = ((d[12] & 0xFF) << 8) | (d[11] & 0xFF);
+        if (unit != 0x02) {
+            // 非 kg 模式：换算系数无法可靠验证，宁可跳过并记日志，不落错误数据
+            Log.w(TAG, String.format(Locale.US, "跳过非 kg 单位帧 unit=0x%02x", unit));
+            return;
+        }
+        double weight = rawWeight * 0.005;
+        if (weight < 10 || weight > 300) {
+            return;
+        }
+        weight = Math.round(weight * 100) / 100.0;
+
+        Double impedance = null;
+        if (hasImpedance) {
+            int z = ((d[10] & 0xFF) << 8) | (d[9] & 0xFF);
+            if (z > 0 && z < 3000) {
+                impedance = (double) z;
+            }
+        }
+
+        // 秤 RTC 与接收时刻的偏差 = 秤钟偏移（广播是实时的）：≤10 分钟视为钟准
+        // 原样用；更大偏差按 15 分钟粒度量化后校正——用户的秤 RTC 被对成了 UTC
+        // （偏移 +8h），量化保证手机/网关双端各自计算也得到同一校正量 → 去重键
+        // 仍一致（gateway/miscale_listener.parse_adv 同款逻辑，两边必须同步改）；
+        // RTC 字节非法才用接收时刻取整到分钟兜底
+        long nowMs = System.currentTimeMillis();
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(nowMs);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        int year = ((d[3] & 0xFF) << 8) | (d[2] & 0xFF);
+        try {
+            Calendar rtc = Calendar.getInstance();
+            rtc.set(year, (d[4] & 0xFF) - 1, d[5] & 0xFF, d[6] & 0xFF, d[7] & 0xFF, d[8] & 0xFF);
+            rtc.set(Calendar.MILLISECOND, 0);
+            long deltaMs = nowMs - rtc.getTimeInMillis();
+            if (Math.abs(deltaMs) <= 10 * 60_000L) {
+                cal = rtc;  // 钟准（含小漂移）：原样用，双端天然一致
+            } else {
+                long quarterMs = 15 * 60_000L;
+                // Math.round 半进位——与网关 _round_half_up 一致，负偏移不分叉
+                long offsetQ = Math.round((double) deltaMs / quarterMs) * quarterMs;
+                rtc.setTimeInMillis(rtc.getTimeInMillis() + offsetQ);
+                cal = rtc;
+            }
+        } catch (Exception ignored) {
+        }
+        String tsIso = String.format(Locale.US, "%04d-%02d-%02dT%02d:%02d:%02d",
+                cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1,
+                cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.HOUR_OF_DAY),
+                cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND));
+        String key = String.format(Locale.US, "%s-%d",
+                tsIso.replaceAll("[-:]", ""), Math.round(weight * 200));
+
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<String, Long>> it = sent.entrySet().iterator();
+        while (it.hasNext()) {
+            if (now - it.next().getValue() > SENT_TTL_MS) {
+                it.remove();
+            }
+        }
+        if (sent.containsKey(key)) {
+            return;
+        }
+
+        Measurement m = pending.get(key);
+        if (m == null) {
+            final String fKey = key;
+            Runnable flush = () -> flushMeasurement(fKey);
+            m = new Measurement(key, tsIso, weight, impedance, flush);
+            pending.put(key, m);
+            handler.postDelayed(flush, SETTLE_MS);
+        } else if (m.impedance == null && impedance != null) {
+            m.impedance = impedance;
+        }
+        // 拿到阻抗就不必再等窗口
+        if (m.impedance != null) {
+            handler.removeCallbacks(m.flush);
+            flushMeasurement(key);
+        }
+    }
+
+    private void flushMeasurement(String key) {
+        Measurement m = pending.remove(key);
+        if (m == null) {
+            return;
+        }
+        sent.put(key, System.currentTimeMillis());
+        SharedPreferences prefs = getSharedPreferences("shell", MODE_PRIVATE);
+        final String token = prefs.getString("ingest_token", "");
+        if (HealthServerConfig.active(this).isEmpty() || token.isEmpty()) {
+            updateNotification("未配置服务器/Token");
+            return;
+        }
+        final String measurementJson = String.format(Locale.US,
+                "{\"ts\":\"%s\",\"weight_kg\":%.2f,\"impedance\":%s,"
+                        + "\"impedance_low\":%s,\"impedance_high\":%s,"
+                        + "\"heart_rate\":%s,\"profile_id\":%s,\"model\":\"%s\"}",
+                m.tsIso, m.weightKg,
+                m.impedance == null ? "null" : m.impedance.toString(),
+                m.impedance == null ? "null" : m.impedance.toString(),
+                m.impedanceHigh == null ? "null" : m.impedanceHigh.toString(),
+                m.heartRate == null ? "null" : m.heartRate.toString(),
+                m.profileId == null ? "null" : m.profileId.toString(),
+                m.model);
+        io.execute(() -> {
+            // 多服务器：探测可达地址（IO 线程）；全不通退回活动地址走原有三连重试
+            String server = HealthServerConfig.resolveOrActive(ScaleScanService.this);
+            boolean ok = false;
+            for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+                ok = postJson(server + "/api/ingest/miscale", token,
+                        "{\"measurements\":[" + measurementJson + "]}");
+                if (!ok) {
+                    try {
+                        Thread.sleep(2000L * attempt);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+            if (ok) {
+                drainQueue(server, token);  // 顺带补发之前积压的
+            } else {
+                // 三连失败：落本地队列，保留 sent 键防同一测量的后续广播重复入队
+                enqueueFailed(measurementJson);
+            }
+            final String text = ok
+                    ? String.format(Locale.US, "已记录 %.2f kg%s", m.weightKg,
+                        m.impedance != null ? "（含体成分）" : "")
+                    : "上报失败，已存本地稍后补发";
+            handler.post(() -> updateNotification(text));
+        });
+    }
+
+    /** 上报失败的测量入本地队列（IO 线程调用；SharedPreferences 线程安全）。 */
+    private void enqueueFailed(String measurementJson) {
+        SharedPreferences prefs = getSharedPreferences("shell", MODE_PRIVATE);
+        try {
+            JSONArray arr = new JSONArray(prefs.getString(KEY_QUEUE, "[]"));
+            arr.put(new JSONObject(measurementJson));
+            while (arr.length() > QUEUE_MAX) {
+                arr.remove(0);
+            }
+            prefs.edit().putString(KEY_QUEUE, arr.toString()).apply();
+            Log.w(TAG, "上报失败入本地队列，共 " + arr.length() + " 条");
+        } catch (JSONException e) {
+            Log.w(TAG, "入队失败: " + e);
+        }
+    }
+
+    /** 补发本地队列（IO 线程调用）：保序，遇到失败即停，其余下轮再试。 */
+    private void drainQueue(String server, String token) {
+        SharedPreferences prefs = getSharedPreferences("shell", MODE_PRIVATE);
+        JSONArray arr;
+        try {
+            arr = new JSONArray(prefs.getString(KEY_QUEUE, "[]"));
+        } catch (JSONException e) {
+            prefs.edit().remove(KEY_QUEUE).apply();  // 损坏的队列直接清掉
+            return;
+        }
+        if (arr.length() == 0) {
+            return;
+        }
+        int sentCount = 0;
+        while (arr.length() > 0) {
+            JSONObject item = arr.optJSONObject(0);
+            if (item == null) {
+                arr.remove(0);
+                continue;
+            }
+            if (!postJson(server + "/api/ingest/miscale", token,
+                    "{\"measurements\":[" + item + "]}")) {
+                break;
+            }
+            arr.remove(0);
+            sentCount++;
+        }
+        prefs.edit().putString(KEY_QUEUE, arr.toString()).apply();
+        if (sentCount > 0) {
+            Log.i(TAG, "本地队列补发 " + sentCount + " 条，剩 " + arr.length());
+        }
+    }
+
+    private static boolean postJson(String url, String token, String json) {
+        // 读超时短：上报失败要尽快转入本地队列，不能吊着 IO 线程
+        return HealthHttpPost.postJson(TAG, url, token, json, 8000, 8000);
+    }
+
+    // ---- 生命周期 -------------------------------------------------------------
+
+    @Override
+    public void onDestroy() {
+        stopped = true;
+        stopScan();
+        if (btStateReceiver != null) {
+            try {
+                unregisterReceiver(btStateReceiver);
+            } catch (Exception ignored) {
+            }
+            btStateReceiver = null;
+        }
+        handler.removeCallbacksAndMessages(null);
+        io.shutdownNow();
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        nm.cancel(NOTIFICATION_ID);
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+}

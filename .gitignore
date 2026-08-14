@@ -1,0 +1,9 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+
+# Samsung Health Data SDK is proprietary and must be downloaded separately.
+app/libs/*.aar
+!app/libs/README.md

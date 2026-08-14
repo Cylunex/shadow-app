@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "modules": [
+    {
+      "id": "health",
+      "name": "健康",
+      "description": "健康记录、趋势与设备同步",
+      "startPath": "/shealth/",
+      "healthPath": "/shealth/healthz",
+      "icon": "heart",
+      "color": "#14b8a6",
+      "enabled": true,
+      "capabilities": ["web", "health.scale", "health.samsung", "notification"]
+    },
+    {
+      "id": "stock",
+      "name": "股票",
+      "description": "选股、持仓与市场研究",
+      "startPath": "/stock/",
+      "healthPath": "/stock/api/health",
+      "icon": "chart",
+      "color": "#f59e0b",
+      "enabled": true,
+      "capabilities": ["web"]
+    }
+  ]
+}
