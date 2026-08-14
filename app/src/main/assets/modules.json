@@ -11,6 +11,12 @@
           "port": 55080,
           "startPath": "/shealth/",
           "probePath": "/shealth/healthz"
+        },
+        {
+          "server": "cloud",
+          "port": 20001,
+          "startPath": "/shealth/",
+          "probePath": "/shealth/healthz"
         }
       ],
       "icon": "heart",
@@ -26,6 +32,12 @@
         {
           "server": "nas",
           "port": 55080,
+          "startPath": "/stock/",
+          "probePath": "/stock/api/health"
+        },
+        {
+          "server": "cloud",
+          "port": 20001,
           "startPath": "/stock/",
           "probePath": "/stock/api/health"
         }

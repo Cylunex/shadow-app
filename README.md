@@ -102,6 +102,15 @@ http://192.168.1.100:55080/shealth/
 http://192.168.1.100:55080/stock/
 ```
 
+云端 FRP 把 NAS 门户 `55080` 映射为远端 `20001`，因此填写云端域名后，健康和股票也具有以下备用入口：
+
+```text
+http://shadow.example.com:20001/shealth/
+http://shadow.example.com:20001/stock/
+```
+
+云端地址的协议必须与 FRP 入口一致；直接 TCP 转发 HTTP 时应填写 `http://域名`。
+
 模块可仅声明 `nas` 或 `cloud`，也可同时声明两条路由实现模块级自动切换。Garden 这类仅部署在云端的应用只需配置云端目录，不会影响健康和股票的 NAS 地址。
 
 带 HTTP Basic 的入口可以写为：
