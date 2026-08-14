@@ -16,6 +16,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
@@ -58,6 +59,7 @@ import java.util.concurrent.Executors;
 
 /** Generic multi-web-app container. Feature-specific code lives outside this activity. */
 public class MainActivity extends Activity {
+    private static final String TAG = "MainActivity";
     private static final String HOME_URL = "file:///android_asset/home.html";
     private static final String ERROR_URL = "file:///android_asset/error.html";
     private static final String HEALTH_OFFLINE_URL = "file:///android_asset/health-offline.html";
@@ -105,10 +107,9 @@ public class MainActivity extends Activity {
                                 | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
             }
         } else {
-            window.getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+            // Android 10 still lets the framework place content below opaque system bars.
+            window.setStatusBarColor(BACKGROUND);
+            window.setNavigationBarColor(BACKGROUND);
         }
 
         prefs = getSharedPreferences(ServerConfig.PREFS_NAME, MODE_PRIVATE);
@@ -168,10 +169,18 @@ public class MainActivity extends Activity {
         if (!ServerConfig.isConfigured(this)) {
             mainHandler.post(() -> showSettings(true));
         }
-        healthFeature.restore();
-        if (HealthOffline.queueSize(this) > 0) {
-            HealthOffline.scheduleFlush(this);
-        }
+        // Native health integrations are optional. Restore them after the shell is visible and
+        // never let a vendor-specific failure take down the web container during app startup.
+        mainHandler.post(() -> {
+            try {
+                healthFeature.restore();
+                if (HealthOffline.queueSize(this) > 0) {
+                    HealthOffline.scheduleFlush(this);
+                }
+            } catch (RuntimeException e) {
+                Log.e(TAG, "restore health integrations failed", e);
+            }
+        });
     }
 
     private View createToolbar() {
@@ -221,19 +230,26 @@ public class MainActivity extends Activity {
             if (Build.VERSION.SDK_INT >= 30) {
                 int types = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
                 Insets bars = windowInsets.getInsets(types);
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-                return new WindowInsets.Builder(windowInsets)
-                        .setInsets(types, Insets.NONE)
-                        .build();
+                setPaddingIfChanged(view, bars.left, bars.top, bars.right, bars.bottom);
+                // Preserve the platform object. Rebuilding/consuming it can trigger repeated
+                // layout dispatches on some Samsung One UI versions.
+                return windowInsets;
             }
-            view.setPadding(
+            setPaddingIfChanged(view,
                     windowInsets.getSystemWindowInsetLeft(),
                     windowInsets.getSystemWindowInsetTop(),
                     windowInsets.getSystemWindowInsetRight(),
                     windowInsets.getSystemWindowInsetBottom());
-            return windowInsets.replaceSystemWindowInsets(0, 0, 0, 0);
+            return windowInsets;
         });
         root.requestApplyInsets();
+    }
+
+    private void setPaddingIfChanged(View view, int left, int top, int right, int bottom) {
+        if (view.getPaddingLeft() != left || view.getPaddingTop() != top
+                || view.getPaddingRight() != right || view.getPaddingBottom() != bottom) {
+            view.setPadding(left, top, right, bottom);
+        }
     }
 
     private Button toolbarButton(String text, View.OnClickListener listener) {
