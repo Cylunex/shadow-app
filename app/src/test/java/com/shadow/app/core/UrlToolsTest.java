@@ -26,6 +26,18 @@ public class UrlToolsTest {
     }
 
     @Test
+    public void withPortBuildsNasModuleOrigin() {
+        assertEquals("http://192.168.1.100:55080",
+                UrlTools.withPort("http://192.168.1.100", 55080));
+    }
+
+    @Test
+    public void withPortPreservesCredentialsAndCommonPath() {
+        assertEquals("https://user:pass@example.com:8443/shadow",
+                UrlTools.withPort("https://user:pass@example.com/shadow", 8443));
+    }
+
+    @Test
     public void bareRemovesOnlyUserInfo() {
         assertEquals("https://example.com:8443/stock/",
                 UrlTools.bare("https://user:pass@example.com:8443/stock/"));

@@ -3,10 +3,8 @@ package com.shadow.app.health;
 import android.content.Context;
 import android.net.Uri;
 
-import com.shadow.app.core.AppModule;
 import com.shadow.app.core.ModuleRegistry;
 import com.shadow.app.core.ServerConfig;
-import com.shadow.app.core.UrlTools;
 
 /** Resolves the health module endpoint for native ingestion workers. */
 final class HealthServerConfig {
@@ -30,12 +28,8 @@ final class HealthServerConfig {
     }
 
     static String matching(Context context, Uri requestUri) {
-        AppModule health = ModuleRegistry.load(context).get("health");
-        if (health == null) {
-            return null;
-        }
-        for (String server : ServerConfig.urls(context)) {
-            String healthUrl = UrlTools.join(server, health.startPath);
+        ModuleRegistry registry = ModuleRegistry.load(context);
+        for (String healthUrl : ServerConfig.moduleUrls(context, registry, "health")) {
             if (SnapshotCache.sameOrigin(requestUri, healthUrl)) {
                 return trimTrailingSlash(healthUrl);
             }

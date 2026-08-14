@@ -1,6 +1,7 @@
 package com.shadow.app.core;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 
 /** URL normalization shared by the shell, downloads and native feature adapters. */
 public final class UrlTools {
@@ -39,6 +40,21 @@ public final class UrlTools {
             return normalized + "/";
         }
         return normalized + (suffix.startsWith("/") ? suffix : "/" + suffix);
+    }
+
+    /** Replace the port while preserving scheme, credentials, host and any common base path. */
+    public static String withPort(String base, int port) {
+        String normalized = normalizeBase(base);
+        if (normalized.isEmpty() || port <= 0) {
+            return normalized;
+        }
+        try {
+            URI uri = URI.create(normalized);
+            return new URI(uri.getScheme(), uri.getUserInfo(), uri.getHost(), port,
+                    uri.getPath(), uri.getQuery(), null).toString();
+        } catch (RuntimeException | URISyntaxException ignored) {
+            return "";
+        }
     }
 
     /** Remove user-info before showing a URL or handing it to WebView. */

@@ -49,8 +49,6 @@ import com.shadow.app.health.SamsungSync;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -144,7 +142,7 @@ public class MainActivity extends Activity {
         webView.setDownloadListener(this::download);
 
         openHome();
-        if (ServerConfig.urls(this).isEmpty()) {
+        if (!ServerConfig.isConfigured(this)) {
             mainHandler.post(() -> showSettings(true));
         }
         healthFeature.restore();
@@ -232,7 +230,7 @@ public class MainActivity extends Activity {
                     return false;
                 }
                 if (url.startsWith("http://") || url.startsWith("https://")) {
-                    if (ServerConfig.isTrustedModuleUrl(MainActivity.this, url)) {
+                    if (ServerConfig.isTrustedModuleUrl(MainActivity.this, registry, url)) {
                         return false;
                     }
                     return openExternal(url);
@@ -298,7 +296,7 @@ public class MainActivity extends Activity {
                     return;
                 }
                 String failedModule = moduleIdForUrl(request.getUrl().toString());
-                String failedBase = ServerConfig.active(MainActivity.this);
+                String failedBase = request.getUrl().toString();
                 loadingErrorPage = true;
                 showingHealthOffline = false;
                 showingHealthSnapshot = false;
@@ -338,8 +336,10 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "应用不存在或未启用", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (ServerConfig.active(this).isEmpty()) {
-            showSettings(true);
+        String targetUrl = ServerConfig.moduleUrl(this, registry, module.id);
+        if (targetUrl.isEmpty()) {
+            Toast.makeText(this, "请先配置此应用所在的服务器", Toast.LENGTH_SHORT).show();
+            showSettings(false);
             return;
         }
         currentModuleId = module.id;
@@ -350,7 +350,7 @@ public class MainActivity extends Activity {
         showingHealthSnapshot = false;
         mainHandler.removeCallbacks(healthProbe);
         titleView.setText(module.name);
-        currentPageUrl = UrlTools.bare(ServerConfig.moduleUrl(this, registry, module.id));
+        currentPageUrl = UrlTools.bare(targetUrl);
         webView.loadUrl(currentPageUrl);
     }
 
@@ -363,9 +363,12 @@ public class MainActivity extends Activity {
 
     private String moduleIdForUrl(String url) {
         for (AppModule module : registry.all()) {
-            String moduleUrl = UrlTools.bare(ServerConfig.moduleUrl(this, registry, module.id));
-            if (!moduleUrl.isEmpty() && (url.equals(moduleUrl) || url.startsWith(moduleUrl))) {
-                return module.id;
+            for (String candidate : ServerConfig.moduleUrls(this, registry, module.id)) {
+                String moduleUrl = UrlTools.bare(candidate);
+                if (!moduleUrl.isEmpty()
+                        && (url.equals(moduleUrl) || url.startsWith(moduleUrl))) {
+                    return module.id;
+                }
             }
         }
         return null;
@@ -425,7 +428,6 @@ public class MainActivity extends Activity {
                 if (!alternative.isEmpty() && loadingErrorPage
                         && moduleId.equals(currentModuleId)
                         && !isFinishing() && !isDestroyed()) {
-                    ServerConfig.activate(MainActivity.this, alternative);
                     openModule(moduleId);
                 }
             });
@@ -447,22 +449,32 @@ public class MainActivity extends Activity {
         if (HEALTH_OFFLINE_URL.equals(currentPageUrl)) {
             return true;
         }
-        String healthUrl = UrlTools.bare(
-                ServerConfig.moduleUrl(this, registry, "health"));
-        return currentPageUrl != null && !healthUrl.isEmpty()
-                && (currentPageUrl.equals(healthUrl) || currentPageUrl.startsWith(healthUrl));
+        if (currentPageUrl == null) {
+            return false;
+        }
+        for (String candidate : ServerConfig.moduleUrls(this, registry, "health")) {
+            String healthUrl = UrlTools.bare(candidate);
+            if (!healthUrl.isEmpty()
+                    && (currentPageUrl.equals(healthUrl) || currentPageUrl.startsWith(healthUrl))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void showSettings(boolean firstRun) {
-        EditText servers = new EditText(this);
-        servers.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI
-                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        servers.setMinLines(2);
-        servers.setMaxLines(4);
-        servers.setHint("门户地址，每行一个，内网地址优先");
-        List<String> configured = ServerConfig.urls(this);
-        servers.setText(configured.isEmpty()
-                ? ServerConfig.DEFAULT_SERVER_URL : String.join("\n", configured));
+        EditText nasServer = new EditText(this);
+        nasServer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        nasServer.setSingleLine(true);
+        nasServer.setHint("NAS 地址，如 http://192.168.1.100");
+        nasServer.setText(ServerConfig.nas(this).isEmpty()
+                ? ServerConfig.DEFAULT_NAS_URL : ServerConfig.nas(this));
+
+        EditText cloudServer = new EditText(this);
+        cloudServer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        cloudServer.setSingleLine(true);
+        cloudServer.setHint("云端域名，可留空");
+        cloudServer.setText(ServerConfig.cloud(this));
 
         EditText token = new EditText(this);
         token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
@@ -490,14 +502,16 @@ public class MainActivity extends Activity {
         reminder.setChecked(prefs.getBoolean(Reminders.PREF_ENABLED, false));
 
         TextView hint = new TextView(this);
-        hint.setText("模块路径由 modules.json 统一管理；当前健康为 /shealth/，股票为 /stock/。"
+        hint.setText("这里只配置 NAS 主机和云端域名。各应用使用哪个服务器、端口或目录，"
+                + "由 modules.json 的 routes 统一管理；未配置对应服务器的应用会提示补充地址。"
                 + "地址可包含 HTTP Basic 用户名和密码。");
         hint.setTextSize(12);
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(18), dp(6), dp(18), 0);
-        content.addView(servers);
+        content.addView(nasServer);
+        content.addView(cloudServer);
         content.addView(token);
         content.addView(scale);
         content.addView(bindkey);
@@ -509,17 +523,12 @@ public class MainActivity extends Activity {
                 .setTitle("Shadow 连接设置")
                 .setView(content)
                 .setPositiveButton("保存", (dialog, which) -> {
-                    List<String> values = new ArrayList<>();
-                    for (String line : servers.getText().toString().split("\n")) {
-                        String value = UrlTools.normalizeBase(line);
-                        if (!value.isEmpty() && !values.contains(value)) {
-                            values.add(value);
-                        }
+                    String nasUrl = UrlTools.normalizeBase(nasServer.getText().toString());
+                    String cloudUrl = UrlTools.normalizeBase(cloudServer.getText().toString());
+                    if (nasUrl.isEmpty() && cloudUrl.isEmpty()) {
+                        nasUrl = ServerConfig.DEFAULT_NAS_URL;
                     }
-                    if (values.isEmpty()) {
-                        values.add(ServerConfig.DEFAULT_SERVER_URL);
-                    }
-                    ServerConfig.save(this, values);
+                    ServerConfig.save(this, nasUrl, cloudUrl);
                     healthFeature.applySettings(
                             token.getText().toString(), scale.isChecked(),
                             bindkey.getText().toString(), samsung.isChecked(), reminder.isChecked());
@@ -625,7 +634,7 @@ public class MainActivity extends Activity {
     private final class ShellBridge {
         @JavascriptInterface
         public String getModules() {
-            return registry.clientJson(ServerConfig.active(MainActivity.this));
+            return registry.clientJson(MainActivity.this);
         }
 
         @JavascriptInterface

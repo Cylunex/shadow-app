@@ -25,7 +25,7 @@ public final class ModuleRegistry {
     public static ModuleRegistry load(Context context) {
         try (InputStream input = context.getAssets().open("modules.json")) {
             JSONObject root = new JSONObject(readAll(input));
-            if (root.optInt("schemaVersion") != 1) {
+            if (root.optInt("schemaVersion") != 2) {
                 throw new JSONException("unsupported module schema");
             }
             JSONArray values = root.getJSONArray("modules");
@@ -51,15 +51,15 @@ public final class ModuleRegistry {
         return find(modules, id);
     }
 
-    public String clientJson(String baseUrl) {
+    public String clientJson(Context context) {
         JSONArray out = new JSONArray();
         for (AppModule module : modules) {
             if (!module.enabled) {
                 continue;
             }
             try {
-                out.put(module.toClientJson(
-                        UrlTools.bare(UrlTools.join(baseUrl, module.startPath))));
+                out.put(module.toClientJson(UrlTools.bare(
+                        ServerConfig.moduleUrl(context, this, module.id))));
             } catch (JSONException ignored) {
             }
         }

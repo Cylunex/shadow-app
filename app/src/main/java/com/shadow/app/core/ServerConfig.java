@@ -11,12 +11,16 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Ordered portal endpoints. A module path is resolved against the active endpoint. */
+/** Resolves module routes against the NAS and cloud server environments. */
 public final class ServerConfig {
     public static final String PREFS_NAME = "shell";
-    public static final String KEY_ACTIVE = "active_server_url";
-    public static final String KEY_URLS = "server_urls";
-    public static final String DEFAULT_SERVER_URL = "http://192.168.1.100:55080";
+    public static final String KEY_NAS_URL = "nas_server_url";
+    public static final String KEY_CLOUD_URL = "cloud_server_url";
+    public static final String DEFAULT_NAS_URL = "http://192.168.1.100";
+
+    private static final String KEY_LEGACY_URLS = "server_urls";
+    private static final String KEY_LEGACY_ACTIVE = "active_server_url";
+    private static final String KEY_ACTIVE_ROUTE_PREFIX = "active_route_";
 
     private ServerConfig() {
     }
@@ -25,37 +29,64 @@ public final class ServerConfig {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     }
 
-    public static List<String> urls(Context context) {
-        List<String> result = new ArrayList<>();
-        String raw = prefs(context).getString(KEY_URLS, "");
-        for (String line : raw.split("\n")) {
-            String value = UrlTools.normalizeBase(line);
-            if (!value.isEmpty() && !result.contains(value)) {
-                result.add(value);
-            }
+    public static String nas(Context context) {
+        String configured = UrlTools.normalizeBase(prefs(context).getString(KEY_NAS_URL, ""));
+        if (!configured.isEmpty()) {
+            return configured;
         }
-        return result;
+        return legacyUrl(context, 0);
     }
 
-    public static String active(Context context) {
-        String current = UrlTools.normalizeBase(prefs(context).getString(KEY_ACTIVE, ""));
-        if (!current.isEmpty()) {
-            return current;
-        }
-        List<String> configured = urls(context);
-        return configured.isEmpty() ? "" : configured.get(0);
+    public static String cloud(Context context) {
+        String configured = UrlTools.normalizeBase(prefs(context).getString(KEY_CLOUD_URL, ""));
+        return configured.isEmpty() ? legacyUrl(context, 1) : configured;
     }
 
-    public static void save(Context context, List<String> values) {
+    public static boolean isConfigured(Context context) {
+        return !nas(context).isEmpty() || !cloud(context).isEmpty();
+    }
+
+    public static void save(Context context, String nasUrl, String cloudUrl) {
         prefs(context).edit()
-                .putString(KEY_URLS, String.join("\n", values))
-                .putString(KEY_ACTIVE, values.isEmpty() ? "" : values.get(0))
+                .putString(KEY_NAS_URL, UrlTools.normalizeBase(nasUrl))
+                .putString(KEY_CLOUD_URL, UrlTools.normalizeBase(cloudUrl))
+                .remove(KEY_LEGACY_URLS)
+                .remove(KEY_LEGACY_ACTIVE)
                 .apply();
     }
 
     public static String moduleUrl(Context context, ModuleRegistry registry, String moduleId) {
         AppModule module = registry.get(moduleId);
-        return module == null ? "" : UrlTools.join(active(context), module.startPath);
+        if (module == null) {
+            return "";
+        }
+        ModuleRoute active = activeRoute(context, module);
+        if (active != null) {
+            return routeUrl(context, active);
+        }
+        for (ModuleRoute route : module.routes) {
+            String url = routeUrl(context, route);
+            if (!url.isEmpty()) {
+                return url;
+            }
+        }
+        return "";
+    }
+
+    public static List<String> moduleUrls(Context context, ModuleRegistry registry,
+                                          String moduleId) {
+        List<String> result = new ArrayList<>();
+        AppModule module = registry.get(moduleId);
+        if (module == null) {
+            return result;
+        }
+        for (ModuleRoute route : module.routes) {
+            String url = routeUrl(context, route);
+            if (!url.isEmpty() && !result.contains(url)) {
+                result.add(url);
+            }
+        }
+        return result;
     }
 
     /** Blocking failover probe; only call from a worker thread. Returns a module base URL. */
@@ -64,52 +95,46 @@ public final class ServerConfig {
         return available.isEmpty() ? moduleUrl(context, registry, moduleId) : available;
     }
 
-    /** Blocking failover probe; returns an empty string when every endpoint is unavailable. */
+    /** Blocking probe; selects the first reachable configured route for this module. */
     public static String availableModule(Context context, ModuleRegistry registry, String moduleId) {
         AppModule module = registry.get(moduleId);
         if (module == null) {
             return "";
         }
-        String current = active(context);
-        if (!current.isEmpty() && probe(current, module)) {
-            return UrlTools.join(current, module.startPath);
+        ModuleRoute active = activeRoute(context, module);
+        if (active != null && probe(context, active)) {
+            return routeUrl(context, active);
         }
-        for (String candidate : urls(context)) {
-            if (candidate.equals(current)) {
+        for (ModuleRoute candidate : module.routes) {
+            if (active != null && candidate.server.equals(active.server)) {
                 continue;
             }
-            if (probe(candidate, module)) {
-                prefs(context).edit().putString(KEY_ACTIVE, candidate).apply();
-                return UrlTools.join(candidate, module.startPath);
+            if (probe(context, candidate)) {
+                activate(context, module.id, candidate.server);
+                return routeUrl(context, candidate);
             }
         }
         return "";
     }
 
-    /** Probe only configured fallbacks after a foreground page failed to load. */
+    /** Probe configured fallbacks after a foreground module page failed to load. */
     public static String availableAlternativeModule(Context context, ModuleRegistry registry,
-                                                    String moduleId, String failedBase) {
+                                                    String moduleId, String failedUrl) {
         AppModule module = registry.get(moduleId);
-        if (module == null || module.healthPath.isEmpty()) {
+        if (module == null) {
             return "";
         }
-        String excluded = UrlTools.normalizeBase(failedBase);
-        for (String candidate : urls(context)) {
-            if (candidate.equals(excluded)) {
+        for (ModuleRoute candidate : module.routes) {
+            String candidateUrl = routeUrl(context, candidate);
+            if (candidateUrl.isEmpty() || sameModuleRoute(failedUrl, candidateUrl)) {
                 continue;
             }
-            if (probe(candidate, module)) {
-                return candidate;
+            if (probe(context, candidate)) {
+                activate(context, module.id, candidate.server);
+                return candidateUrl;
             }
         }
         return "";
-    }
-
-    public static void activate(Context context, String baseUrl) {
-        String normalized = UrlTools.normalizeBase(baseUrl);
-        if (!normalized.isEmpty() && urls(context).contains(normalized)) {
-            prefs(context).edit().putString(KEY_ACTIVE, normalized).apply();
-        }
     }
 
     public static String basicAuthHeader(String url) {
@@ -126,17 +151,13 @@ public final class ServerConfig {
     }
 
     public static String basicAuthHeaderForUrl(Context context, String url) {
-        for (String server : urls(context)) {
-            if (UrlTools.sameOrigin(url, server)) {
-                return basicAuthHeader(server);
-            }
-        }
-        return null;
+        String root = matchingRoot(context, url);
+        return root == null ? null : basicAuthHeader(root);
     }
 
     public static String[] credentialsForHost(Context context, String host) {
-        for (String server : urls(context)) {
-            Uri uri = Uri.parse(server);
+        for (String root : roots(context)) {
+            Uri uri = Uri.parse(root);
             String info = uri.getUserInfo();
             if (info == null || !host.equalsIgnoreCase(uri.getHost())) {
                 continue;
@@ -150,24 +171,58 @@ public final class ServerConfig {
         return null;
     }
 
-    public static boolean isTrustedModuleUrl(Context context, String url) {
-        for (String server : urls(context)) {
-            if (UrlTools.sameOrigin(url, server)) {
-                return true;
+    public static boolean isTrustedModuleUrl(Context context, ModuleRegistry registry,
+                                             String url) {
+        for (AppModule module : registry.all()) {
+            for (String moduleUrl : moduleUrls(context, registry, module.id)) {
+                if (UrlTools.sameOrigin(url, moduleUrl)) {
+                    return true;
+                }
             }
         }
         return false;
     }
 
-    private static boolean probe(String server, AppModule module) {
-        if (module.healthPath.isEmpty()) {
-            return true;
+    private static ModuleRoute activeRoute(Context context, AppModule module) {
+        String server = prefs(context).getString(KEY_ACTIVE_ROUTE_PREFIX + module.id, "");
+        ModuleRoute selected = module.route(server);
+        if (selected != null && !routeUrl(context, selected).isEmpty()) {
+            return selected;
+        }
+        for (ModuleRoute route : module.routes) {
+            if (!routeUrl(context, route).isEmpty()) {
+                return route;
+            }
+        }
+        return null;
+    }
+
+    private static void activate(Context context, String moduleId, String server) {
+        prefs(context).edit().putString(KEY_ACTIVE_ROUTE_PREFIX + moduleId, server).apply();
+    }
+
+    private static String routeUrl(Context context, ModuleRoute route) {
+        String root = ModuleRoute.NAS.equals(route.server) ? nas(context) : cloud(context);
+        if (root.isEmpty()) {
+            return "";
+        }
+        return UrlTools.join(UrlTools.withPort(root, route.port), route.startPath);
+    }
+
+    private static boolean probe(Context context, ModuleRoute route) {
+        String moduleUrl = routeUrl(context, route);
+        if (moduleUrl.isEmpty()) {
+            return false;
+        }
+        if (route.probePath.isEmpty()) {
+            return false;
         }
         HttpURLConnection connection = null;
         try {
-            String target = UrlTools.join(server, module.healthPath);
+            String root = ModuleRoute.NAS.equals(route.server) ? nas(context) : cloud(context);
+            String target = UrlTools.join(UrlTools.withPort(root, route.port), route.probePath);
             connection = (HttpURLConnection) new URL(UrlTools.bare(target)).openConnection();
-            String auth = basicAuthHeader(server);
+            String auth = basicAuthHeader(root);
             if (auth != null) {
                 connection.setRequestProperty("Authorization", auth);
             }
@@ -181,5 +236,59 @@ public final class ServerConfig {
                 connection.disconnect();
             }
         }
+    }
+
+    private static List<String> roots(Context context) {
+        List<String> result = new ArrayList<>();
+        if (!nas(context).isEmpty()) {
+            result.add(nas(context));
+        }
+        if (!cloud(context).isEmpty()) {
+            result.add(cloud(context));
+        }
+        return result;
+    }
+
+    private static String matchingRoot(Context context, String url) {
+        for (String root : roots(context)) {
+            try {
+                Uri target = Uri.parse(url);
+                Uri configured = Uri.parse(root);
+                if (target.getHost() != null
+                        && target.getHost().equalsIgnoreCase(configured.getHost())
+                        && target.getScheme() != null
+                        && target.getScheme().equalsIgnoreCase(configured.getScheme())) {
+                    return root;
+                }
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static String legacyUrl(Context context, int requestedIndex) {
+        // Compatibility with the original ordered portal list: first is NAS, second is cloud.
+        int index = 0;
+        String legacy = prefs(context).getString(KEY_LEGACY_URLS, "");
+        for (String line : legacy.split("\n")) {
+            String value = UrlTools.normalizeBase(line);
+            if (value.isEmpty()) {
+                continue;
+            }
+            if (index == requestedIndex) {
+                return value;
+            }
+            index++;
+        }
+        return "";
+    }
+
+    private static boolean sameModuleRoute(String first, String second) {
+        if (!UrlTools.sameOrigin(first, second)) {
+            return false;
+        }
+        String a = UrlTools.bare(first);
+        String b = UrlTools.bare(second);
+        return a != null && b != null && (a.startsWith(b) || b.startsWith(a));
     }
 }

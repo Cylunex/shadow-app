@@ -12,7 +12,7 @@ Android 包名为 `com.shadow.app`，应用显示名为 `Shadow`，最低支持 
 ## 功能
 
 - 原生应用中心和统一的返回、主页、刷新、设置导航
-- 多个门户地址按优先级配置，支持局域网和外网备用入口
+- NAS 与云端双环境配置，模块按端口或目录独立路由和故障切换
 - Web 登录 Cookie 持久化
 - 网页文件上传、下载和外部链接处理
 - HTTP Basic 入口认证
@@ -65,20 +65,22 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 服务器配置
 
-首次启动会要求填写门户根地址，默认：
+首次启动会要求填写 NAS 地址，并可选填写云端域名。默认 NAS 地址：
 
 ```text
-http://192.168.1.100:55080
+http://192.168.1.100
 ```
 
-模块路径由 `app/src/main/assets/modules.json` 拼接：
+模块路由由 `app/src/main/assets/modules.json` 拼接。当前健康和股票都指向 NAS 的 `55080` 端口：
 
 ```text
 http://192.168.1.100:55080/shealth/
 http://192.168.1.100:55080/stock/
 ```
 
-可以每行填写一个门户地址。带 HTTP Basic 的入口可以写为：
+模块可仅声明 `nas` 或 `cloud`，也可同时声明两条路由实现模块级自动切换。Garden 这类仅部署在云端的应用只需配置云端目录，不会影响健康和股票的 NAS 地址。
+
+带 HTTP Basic 的入口可以写为：
 
 ```text
 https://user:password@example.com

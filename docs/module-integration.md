@@ -1,25 +1,32 @@
-# Shadow App 模块接入规范 v1
+# Shadow App 模块接入规范 v2
 
 本文定义 Web 应用接入 Shadow App 的最小约定。目标是让新增模块只修改模块清单和反向代理配置，不修改通用 WebView 壳。
 
 ## 1. 部署模型
 
-所有模块优先部署在同一个门户 Origin 下，以一级路径隔离：
+壳只配置两个稳定的服务环境：
 
 ```text
-https://shadow.example.com/<module-id>/
+NAS    http://192.168.1.100
+云端   https://shadow.example.com
 ```
 
-示例：
+模块清单只描述应用在各环境中的端口和目录。例如健康、股票仅部署在 NAS，Garden 仅部署在云端：
 
-```text
-/shealth/    健康
-/stock/      股票
-/garden/     花园
-/verse/      Verse
+```json
+{
+  "id": "garden",
+  "routes": [
+    {
+      "server": "cloud",
+      "startPath": "/garden/",
+      "probePath": "/garden/healthz"
+    }
+  ]
+}
 ```
 
-不建议在模块清单里配置独立域名。确需独立 Origin 时，应先扩展壳的可信来源配置和认证策略。
+同一模块可以同时声明 `nas`、`cloud` 两条路由。壳会记住每个模块自己的活动路由，当前路由探活失败时只切换该模块，不影响其他应用。只声明一条路由的模块不会被错误地切到另一台服务器。
 
 ## 2. 模块清单
 
@@ -33,7 +40,7 @@ app/src/main/assets/modules.json
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "modules": []
 }
 ```
@@ -45,12 +52,33 @@ app/src/main/assets/modules.json
 | `id` | 是 | 稳定标识，格式 `[a-z][a-z0-9-]{1,31}`，发布后不得改名 |
 | `name` | 是 | 应用中心显示名称 |
 | `description` | 是 | 一行功能说明 |
-| `startPath` | 是 | 以 `/` 开头的入口路径，目录入口必须保留尾斜杠 |
-| `healthPath` | 是（可空） | 无需登录、返回 HTTP 200 的探活路径；留空时不支持自动切换备用入口 |
+| `routes` | 是 | 一至两条模块部署路由，同一 `server` 不得重复 |
 | `icon` | 是 | 壳内置图标语义名，当前支持 `heart`、`chart`、`web` |
 | `color` | 是 | `#RRGGBB` 主题色 |
 | `enabled` | 是 | 是否在应用中心展示 |
 | `capabilities` | 是 | 能力声明，仅声明实际需要的能力 |
+
+单条 `routes` 路由字段：
+
+| 字段 | 必填 | 说明 |
+|---|---:|---|
+| `server` | 是 | `nas` 或 `cloud` |
+| `port` | 否 | 覆盖环境根地址端口，适合 NAS 上每个应用使用独立端口 |
+| `startPath` | 是 | 入口目录，以 `/` 开头；目录入口保留尾斜杠 |
+| `probePath` | 是（可空） | 无需登录、返回 HTTP 200 的通用探活路径；留空时只能打开，不能自动判断可达性 |
+
+NAS 独立端口示例：
+
+```json
+{
+  "server": "nas",
+  "port": 55080,
+  "startPath": "/shealth/",
+  "probePath": "/shealth/healthz"
+}
+```
+
+如果服务直接位于端口根目录，可把 `startPath` 写成 `/`、`probePath` 写成 `/healthz`。
 
 当前能力名：
 
@@ -90,7 +118,7 @@ X-Forwarded-Host: $host
 /stock  -> /stock/
 ```
 
-`healthPath` 应快速、无副作用、无需业务登录，仅用于判断对应部署入口是否可达。
+`probePath` 应快速、无副作用、无需业务登录，仅用于判断对应部署入口是否可达。该机制属于通用壳能力，与健康模块没有绑定关系。
 
 ## 5. 原生桥接约定
 
@@ -116,6 +144,7 @@ window.ShellBridge?.startScaleScan?.()
 ## 6. 版本与兼容
 
 - `schemaVersion` 只在清单结构不兼容时递增。
+- v2 将原来的全局 `startPath`、`healthPath` 改为模块级 `routes`；旧版 `server_urls` 第一、第二项会分别作为 NAS 和云端地址读取，用户保存新设置后完成迁移。
 - 模块 `id` 是持久标识，不跟显示名称变化。
 - 新字段应优先采用可选字段和安全默认值。
 - 删除模块前，应先发布不再展示该模块的 APP 版本。
@@ -131,5 +160,7 @@ window.ShellBridge?.startScaleScan?.()
 - [ ] 外部链接交给系统应用
 - [ ] 服务不可达时显示本地错误页并能重试
 - [ ] 不声明原生能力时无法调用敏感能力
-- [ ] `healthPath` 在内网和备用入口都返回 HTTP 200
+- [ ] 每条非空 `probePath` 都返回 HTTP 200
+- [ ] 只部署在 NAS 或云端的模块不会被解析到另一环境
+- [ ] 双路由模块故障切换时不影响其他模块的活动路由
 - [ ] 与健康、股票等已有模块的 Cookie 和路由互不干扰
