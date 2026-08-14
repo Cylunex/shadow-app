@@ -10,37 +10,42 @@
 <style>
   :root{color-scheme:dark}
   *{box-sizing:border-box}
-  body{margin:0;background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;
+  body{margin:0;background:radial-gradient(circle at 80% 0,rgba(24,184,200,.1),transparent 30%),#0d1117;
+       color:#e8f3f6;font-family:system-ui,-apple-system,sans-serif;
        padding:16px 16px 48px;max-width:520px;margin:0 auto}
   header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
-  h1{font-size:18px;margin:0;color:#34d399}
-  .status{font-size:12px;color:#94a3b8;margin:4px 0 16px;line-height:1.6}
+  h1{font-size:18px;margin:0;color:#a6f1ff;font-weight:650}
+  .offline-mark{font-family:"Songti SC","STSong",serif;font-size:27px;color:#f3f3ef;margin-right:5px;
+                text-shadow:7px 6px 16px rgba(24,184,200,.5)}
+  .status{font-size:12px;color:#8b919c;margin:4px 0 16px;line-height:1.6}
   .status b{color:#fbbf24;font-weight:600}
-  .retry{background:transparent;color:#34d399;border:1px solid #34d399;border-radius:8px;
+  .retry{background:rgba(24,184,200,.08);color:#a6f1ff;border:1px solid rgba(24,184,200,.55);border-radius:8px;
          padding:6px 14px;font-size:13px}
-  section{background:#1e293b;border-radius:14px;padding:14px;margin-bottom:14px}
-  h2{font-size:13px;margin:0 0 10px;color:#94a3b8;font-weight:600;letter-spacing:.05em}
-  .habit{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid rgba(51,65,85,.35)}
+  section{background:linear-gradient(155deg,rgba(20,32,49,.96),rgba(11,20,30,.95));
+          border:1px solid rgba(166,241,255,.11);border-radius:14px;padding:14px;margin-bottom:14px}
+  h2{font-size:13px;margin:0 0 10px;color:#8b919c;font-weight:600;letter-spacing:.05em}
+  .habit{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid rgba(166,241,255,.08)}
   .habit:last-child{border-bottom:0}
   .habit .box{width:22px;height:22px;border-radius:6px;border:2px solid #475569;flex:none;
               display:flex;align-items:center;justify-content:center;font-size:14px;color:#94a3b8}
-  .habit.done .box{background:#34d399;border-color:#34d399;color:#0f172a}
+  .habit.done .box{background:#18b8c8;border-color:#18b8c8;color:#0d1117}
   .habit .name{flex:1;font-size:15px}
   .habit .hint{font-size:11px;color:#64748b;margin-left:6px}
   .habit .cnt{font-size:12px;color:#94a3b8}
   label{display:block;font-size:12px;color:#94a3b8;margin:8px 0 4px}
-  input,select{width:100%;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+  input,select{width:100%;background:#0d1117;color:#e2e8f0;border:1px solid #2a3b49;
                border-radius:8px;padding:9px 10px;font-size:15px}
   .row{display:flex;gap:8px}
   .row>div{flex:1}
-  .save{width:100%;margin-top:12px;background:#34d399;color:#0f172a;border:0;border-radius:10px;
+  .save{width:100%;margin-top:12px;background:#18b8c8;color:#081015;border:0;border-radius:10px;
         padding:11px;font-weight:700;font-size:15px}
+  .save.secondary{background:transparent;color:#a6f1ff;border:1px solid rgba(24,184,200,.55)}
   .chips{display:flex;flex-wrap:wrap;gap:6px}
-  .chip{background:#0f172a;border:1px solid #334155;color:#cbd5e1;border-radius:999px;
+  .chip{background:#0d1117;border:1px solid #2a3b49;color:#cbd5e1;border-radius:999px;
         padding:6px 12px;font-size:13px}
-  .chip.on{border-color:#34d399;color:#34d399}
-  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#34d399;
-         color:#0f172a;padding:8px 18px;border-radius:999px;font-size:13px;font-weight:600;
+  .chip.on{border-color:#18b8c8;color:#a6f1ff}
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#18b8c8;
+         color:#081015;padding:8px 18px;border-radius:999px;font-size:13px;font-weight:600;
          opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap;z-index:9}
   .toast.show{opacity:1}
   .empty{font-size:13px;color:#64748b;padding:6px 0}
@@ -50,7 +55,7 @@
 </head>
 <body>
 <header>
-  <h1>📴 离线模式</h1>
+  <h1><span class="offline-mark">影</span>离线模式</h1>
   <div>
     <button class="retry" onclick="probeNow()">重试连接</button>
     <button class="retry" onclick="changeAddress()">改地址</button>
@@ -100,7 +105,7 @@
   <label for="weight">体重 kg</label>
   <input id="weight" type="number" inputmode="decimal" min="20" max="500" step="0.1">
   <button class="save" onclick="saveWeight()">暂存体重</button>
-  <button class="save" style="background:transparent;color:#34d399;border:1px solid #34d399"
+  <button class="save secondary"
           onclick="startScale()">⚖️ 开秤监听 3 分钟（上秤即记，秤数据走独立队列）</button>
 </section>
 

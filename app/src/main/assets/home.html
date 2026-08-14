@@ -3,58 +3,131 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>Shadow</title>
+  <title>影 · Shadow</title>
   <style>
-    :root { color-scheme: dark; font-family: system-ui,-apple-system,"Noto Sans SC",sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; color: #e2e8f0; background:
-      radial-gradient(circle at 85% 10%, #17314d 0, transparent 34%), #07111f; }
-    main { max-width: 760px; margin: 0 auto; padding: 34px 20px 48px; }
-    .eyebrow { color: #38bdf8; font-size: 12px; font-weight: 700; letter-spacing: .16em; }
-    h1 { margin: 8px 0 6px; font-size: 34px; letter-spacing: -.04em; }
-    .lead { margin: 0 0 28px; color: #94a3b8; line-height: 1.65; }
-    .grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
-    .card { appearance: none; text-align: left; color: inherit; background: rgba(15,23,42,.86);
-      border: 1px solid rgba(148,163,184,.16); border-radius: 18px; padding: 18px;
-      box-shadow: 0 16px 38px rgba(0,0,0,.18); min-height: 154px; }
-    .card:active { transform: scale(.985); }
-    .icon { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center;
-      font-size: 23px; margin-bottom: 20px; background: color-mix(in srgb,var(--accent) 24%,transparent); }
-    .name { font-size: 20px; font-weight: 750; margin-bottom: 7px; }
-    .desc { color: #94a3b8; font-size: 13px; line-height: 1.5; }
-    .empty { border: 1px dashed #334155; border-radius: 16px; color: #94a3b8; padding: 24px; }
-    .config { margin-top: 24px; width: 100%; border: 1px solid #334155; border-radius: 12px;
-      color: #cbd5e1; background: transparent; padding: 12px; font-weight: 650; }
-    @media (max-width: 480px) { .grid { grid-template-columns: 1fr; } .card { min-height: 134px; } }
+    :root {
+      color-scheme: dark;
+      font-family: system-ui,-apple-system,"Noto Sans SC","Microsoft YaHei",sans-serif;
+      --ink:#0d1117; --panel:#142031; --cyan:#18b8c8; --ice:#a6f1ff;
+      --muted:#8b919c; --line:rgba(166,241,255,.16);
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; color:#edf7fa; background:
+      radial-gradient(circle at 78% -10%,rgba(24,184,200,.13),transparent 34%),
+      linear-gradient(180deg,#080e15 0%,var(--ink) 55%,#091018 100%); }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; opacity:.15;
+      background-image:linear-gradient(rgba(166,241,255,.035) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(166,241,255,.025) 1px,transparent 1px);
+      background-size:28px 28px; mask-image:linear-gradient(to bottom,black,transparent 78%); }
+    main { position:relative; max-width:760px; margin:0 auto; padding:22px 18px 42px; }
+    .brandline { display:flex; align-items:center; justify-content:space-between; margin-bottom:13px; }
+    .brand { display:flex; align-items:baseline; gap:10px; }
+    .han { font-family:"Songti SC","STSong",serif; font-size:31px; line-height:1; font-weight:700;
+      color:#f5f5f1; text-shadow:9px 8px 22px rgba(24,184,200,.45); }
+    .word { font-family:Georgia,serif; font-size:11px; letter-spacing:.42em; color:#b8c3ca; }
+    .online { display:flex; align-items:center; gap:7px; border:1px solid var(--line);
+      border-radius:999px; padding:6px 10px; font-size:10px; letter-spacing:.08em; color:#9caab2;
+      background:rgba(20,32,49,.58); }
+    .dot { width:6px; height:6px; border-radius:50%; background:var(--cyan);
+      box-shadow:0 0 12px var(--cyan); }
+    .hero { position:relative; overflow:hidden; aspect-ratio:680/198; border:1px solid var(--line);
+      border-radius:18px; background:#0b1420; box-shadow:0 20px 50px rgba(0,0,0,.34); }
+    .hero img { display:block; width:100%; height:100%; object-fit:cover; }
+    .hero::after { content:""; position:absolute; inset:0; pointer-events:none;
+      box-shadow:inset 0 0 36px rgba(5,11,17,.42); border-radius:inherit; }
+    .section-head { display:flex; align-items:end; justify-content:space-between; margin:25px 2px 12px; }
+    .section-head h1 { margin:0; font-size:18px; font-weight:650; letter-spacing:.06em; }
+    .section-head span { color:var(--muted); font-size:11px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px; }
+    .card { position:relative; overflow:hidden; appearance:none; width:100%; min-height:220px;
+      padding:0; text-align:left; color:inherit; border:1px solid var(--line); border-radius:18px;
+      background:linear-gradient(155deg,rgba(20,32,49,.97),rgba(9,17,26,.96));
+      box-shadow:0 13px 34px rgba(0,0,0,.25); transition:transform .15s,border-color .15s; }
+    .card:active { transform:scale(.982); border-color:rgba(166,241,255,.42); }
+    .visual { height:108px; position:relative; overflow:hidden; border-bottom:1px solid rgba(166,241,255,.09);
+      background:radial-gradient(circle at 76% 22%,rgba(24,184,200,.18),transparent 42%),#0b1520; }
+    .visual svg { position:absolute; inset:12px 9px 4px; width:calc(100% - 18px); height:calc(100% - 16px); }
+    .visual .gridline { stroke:rgba(166,241,255,.08); stroke-width:1; }
+    .visual .chartfill { fill:url(#chartGlow); }
+    .visual .chartline { fill:none; stroke:#2ad6dc; stroke-width:2.1; filter:drop-shadow(0 0 4px rgba(42,214,220,.45)); }
+    .pulse { position:absolute; left:12px; right:12px; top:47px; height:48px; }
+    .pulse svg { inset:0; width:100%; height:100%; }
+    .moon { position:absolute; width:74px; height:74px; right:10px; top:8px; border-radius:50%;
+      background:url('brand/icon-master.png') center/cover; opacity:.5; filter:saturate(.78); }
+    .card-body { padding:14px 15px 15px; }
+    .card-top { display:flex; align-items:center; justify-content:space-between; }
+    .module-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:9px;
+      color:var(--ice); border:1px solid rgba(24,184,200,.4); background:rgba(24,184,200,.1); }
+    .module-icon svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; }
+    .arrow { color:#61717d; font-size:18px; }
+    .name { margin-top:13px; font-family:"Songti SC","STSong",serif; font-size:19px;
+      font-weight:650; letter-spacing:.08em; }
+    .desc { min-height:36px; margin-top:4px; color:#8998a3; font-size:11px; line-height:1.55; }
+    .tags { display:flex; gap:5px; flex-wrap:wrap; margin-top:10px; }
+    .tag { border:1px solid rgba(139,145,156,.18); border-radius:999px; padding:3px 7px;
+      color:#72818b; font-size:9px; letter-spacing:.04em; }
+    .empty { grid-column:1/-1; border:1px dashed #293b49; border-radius:16px;
+      color:#7e8d97; padding:28px; text-align:center; }
+    .config { width:100%; margin-top:16px; padding:12px; border:1px solid var(--line);
+      border-radius:13px; color:#9fb0ba; background:rgba(20,32,49,.44); font-size:12px; letter-spacing:.12em; }
+    footer { display:flex; justify-content:space-between; margin:20px 3px 0; color:#475661;
+      font-size:9px; letter-spacing:.11em; }
+    @media (max-width:390px) {
+      main { padding-left:13px; padding-right:13px; }
+      .card { min-height:210px; }
+      .visual { height:99px; }
+      .card-body { padding:12px; }
+    }
   </style>
 </head>
 <body>
 <main>
-  <div class="eyebrow">SHADOW WORKSPACE</div>
-  <h1>应用中心</h1>
-  <p class="lead">一个入口，访问各自独立运行的服务。</p>
+  <header class="brandline">
+    <div class="brand"><span class="han">影</span><span class="word">SHADOW</span></div>
+    <div class="online"><span class="dot"></span><span>CONTROL CENTER</span></div>
+  </header>
+  <section class="hero"><img src="brand/banner.png" alt="影 Shadow · 掌控数据，洞察未来，守护自己"></section>
+  <div class="section-head"><h1>我的空间</h1><span id="summary">正在载入</span></div>
   <section id="modules" class="grid"></section>
-  <button class="config" onclick="ShellBridge.openSettings()">连接设置</button>
+  <button class="config" onclick="openSettings()">连接设置 · CONNECTION</button>
+  <footer><span>SHADOW APP</span><span>掌控数据 · 洞察未来 · 守护自己</span></footer>
 </main>
 <script>
-  const symbols = { heart: '♥', chart: '⌁', web: '◇' };
-  function render() {
-    let modules = [];
-    try { modules = JSON.parse(ShellBridge.getModules()); } catch (_) {}
-    const root = document.getElementById('modules');
-    if (!modules.length) {
-      root.innerHTML = '<div class="empty">尚未接入应用</div>';
-      return;
-    }
-    root.innerHTML = modules.map(m => `
-      <button class="card" style="--accent:${m.color}" onclick="ShellBridge.openModule('${m.id}')">
-        <div class="icon" style="color:${m.color}">${symbols[m.icon] || symbols.web}</div>
-        <div class="name">${escapeHtml(m.name)}</div>
-        <div class="desc">${escapeHtml(m.description)}</div>
-      </button>`).join('');
+  const labels = { web:'WEB', 'health.scale':'体脂秤', 'health.samsung':'三星健康', notification:'提醒' };
+  const icons = {
+    heart:`<svg viewBox="0 0 24 24"><path d="M20.8 5.8c-2.2-2.2-5.7-1.9-7.7.3L12 7.3l-1.1-1.2C8.9 3.9 5.4 3.6 3.2 5.8c-2.4 2.4-2.1 6.4.3 8.7L12 22l8.5-7.5c2.4-2.3 2.7-6.3.3-8.7Z"/><path d="M3.9 12h4l1.5-3.1 2.8 7 2.1-4H20"/></svg>`,
+    chart:`<svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M7 15l3-4 3 2 5-7"/><path d="M15 6h3v3"/></svg>`,
+    web:`<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>`
+  };
+  function visual(id) {
+    if (id === 'stock') return `<div class="visual"><svg viewBox="0 0 180 90" preserveAspectRatio="none">
+      <defs><linearGradient id="chartGlow" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#18b8c8" stop-opacity=".3"/><stop offset="1" stop-color="#18b8c8" stop-opacity="0"/></linearGradient></defs>
+      <path class="gridline" d="M0 18H180M0 45H180M0 72H180M36 0V90M90 0V90M144 0V90"/>
+      <path class="chartfill" d="M0 78L16 70 27 75 39 51 51 59 64 43 76 47 87 33 102 40 116 22 128 28 142 15 155 20 180 5V90H0Z"/>
+      <path class="chartline" d="M0 78L16 70 27 75 39 51 51 59 64 43 76 47 87 33 102 40 116 22 128 28 142 15 155 20 180 5"/>
+    </svg></div>`;
+    if (id === 'health') return `<div class="visual"><div class="moon"></div><div class="pulse"><svg viewBox="0 0 180 48" preserveAspectRatio="none"><path class="gridline" d="M0 24H180"/><path class="chartline" d="M0 27H24L31 20 39 32 48 4 60 42 71 23H91L99 17 108 29 118 10 128 34 137 24H180"/></svg></div></div>`;
+    return `<div class="visual"></div>`;
   }
-  function escapeHtml(value) {
-    const node = document.createElement('span'); node.textContent = value || ''; return node.innerHTML;
+  function escapeHtml(value) { const node=document.createElement('span'); node.textContent=value||''; return node.innerHTML; }
+  async function loadModules() {
+    try {
+      if (window.ShellBridge) return JSON.parse(ShellBridge.getModules());
+      const response=await fetch('modules.json');
+      return (await response.json()).modules||[];
+    } catch (_) { return []; }
+  }
+  function openModule(id) { if (window.ShellBridge) ShellBridge.openModule(id); }
+  function openSettings() { if (window.ShellBridge) ShellBridge.openSettings(); }
+  async function render() {
+    const modules=await loadModules();
+    document.getElementById('summary').textContent=modules.length ? `${modules.length} 个应用已接入` : '尚未接入应用';
+    const root=document.getElementById('modules');
+    if (!modules.length) { root.innerHTML='<div class="empty">尚未接入应用</div>'; return; }
+    root.innerHTML=modules.map(m=>`<button class="card" onclick="openModule('${m.id}')">
+      ${visual(m.id)}<div class="card-body"><div class="card-top"><span class="module-icon">${icons[m.icon]||icons.web}</span><span class="arrow">↗</span></div>
+      <div class="name">${escapeHtml(m.name)}</div><div class="desc">${escapeHtml(m.description)}</div>
+      <div class="tags">${(m.capabilities||[]).map(c=>`<span class="tag">${labels[c]||escapeHtml(c)}</span>`).join('')}</div></div></button>`).join('');
   }
   render();
 </script>

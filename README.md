@@ -24,6 +24,7 @@ Android 包名为 `com.shadow.app`，应用显示名为 `Shadow`，最低支持 
 - 每日健康提醒
 
 应用清单和统一接入规则见 [模块接入规范](docs/module-integration.md)。
+品牌色、图标和界面约定见 [品牌规范](docs/brand.md)。
 
 ## 构建
 

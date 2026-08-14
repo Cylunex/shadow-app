@@ -3,32 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>连接失败</title>
+  <title>连接失败 · Shadow</title>
   <style>
-    :root { color-scheme: dark; font-family: system-ui,-apple-system,"Noto Sans SC",sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #07111f; color: #e2e8f0; }
-    main { width: min(86vw,420px); text-align: center; }
-    .mark { margin: auto; width: 64px; height: 64px; display: grid; place-items: center;
-      border-radius: 20px; background: #172033; color: #f59e0b; font-size: 30px; }
-    h1 { font-size: 24px; margin: 20px 0 8px; }
-    p { color: #94a3b8; line-height: 1.6; overflow-wrap: anywhere; }
-    button { width: 100%; margin-top: 10px; padding: 13px; border-radius: 12px; border: 0;
-      background: #0284c7; color: white; font-weight: 700; }
-    .minor { background: transparent; border: 1px solid #334155; color: #cbd5e1; }
+    :root { color-scheme:dark; font-family:system-ui,-apple-system,"Noto Sans SC",sans-serif;
+      --cyan:#18b8c8; --ice:#a6f1ff; --panel:#142031; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; color:#e9f5f8;
+      background:radial-gradient(circle at 50% 10%,rgba(24,184,200,.13),transparent 33%),#0d1117; }
+    main { width:min(88vw,420px); text-align:center; padding:28px 22px; border:1px solid rgba(166,241,255,.14);
+      border-radius:20px; background:linear-gradient(160deg,rgba(20,32,49,.94),rgba(9,16,24,.96));
+      box-shadow:0 25px 60px rgba(0,0,0,.38); }
+    .brand { font-family:"Songti SC","STSong",serif; font-size:44px; color:#f2f3ef;
+      text-shadow:10px 8px 22px rgba(24,184,200,.45); }
+    .word { margin-top:3px; color:#8b99a2; font-family:Georgia,serif; font-size:10px; letter-spacing:.5em; }
+    .line { width:50px; height:1px; margin:22px auto; background:linear-gradient(90deg,transparent,var(--cyan),transparent); }
+    h1 { font-size:20px; margin:0 0 9px; font-weight:650; }
+    p { min-height:44px; margin:0 0 18px; color:#8998a3; font-size:12px; line-height:1.65; overflow-wrap:anywhere; }
+    button { width:100%; margin-top:9px; padding:12px; border-radius:11px; border:1px solid var(--cyan);
+      background:rgba(24,184,200,.13); color:var(--ice); font-weight:650; letter-spacing:.08em; }
+    .minor { background:transparent; border-color:rgba(166,241,255,.14); color:#87949d; }
   </style>
 </head>
 <body><main>
-  <div class="mark">!</div>
+  <div class="brand">影</div><div class="word">SHADOW</div><div class="line"></div>
   <h1>暂时无法连接</h1>
   <p id="message">请检查服务器地址和网络连接。</p>
-  <button onclick="ShellBridge.retry()">重试</button>
+  <button onclick="ShellBridge.retry()">重新连接</button>
   <button class="minor" onclick="ShellBridge.openHome()">返回应用中心</button>
   <button class="minor" onclick="ShellBridge.openSettings()">连接设置</button>
 </main>
 <script>
-  try {
-    const detail = JSON.parse(ShellBridge.getError());
-    if (detail.message) document.getElementById('message').textContent = detail.message;
-  } catch (_) {}
+  try { const detail=JSON.parse(ShellBridge.getError()); if(detail.message) document.getElementById('message').textContent=detail.message; } catch (_) {}
 </script>
 </body></html>

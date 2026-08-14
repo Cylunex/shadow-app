@@ -7,6 +7,7 @@ import android.app.DownloadManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -32,6 +33,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -59,7 +61,8 @@ public class MainActivity extends Activity {
     private static final String HEALTH_OFFLINE_URL = "file:///android_asset/health-offline.html";
     private static final long HEALTH_PROBE_INTERVAL_MS = 30_000;
     private static final int FILE_CHOOSER_REQUEST = 44;
-    private static final int BACKGROUND = Color.rgb(7, 17, 31);
+    private static final int BACKGROUND = Color.rgb(13, 17, 23);
+    private static final int BRAND_CYAN = Color.rgb(166, 241, 255);
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -151,33 +154,52 @@ public class MainActivity extends Activity {
     }
 
     private View createToolbar() {
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.setPadding(dp(6), 0, dp(6), 0);
-        toolbar.setBackgroundColor(Color.rgb(15, 23, 42));
+        toolbar.setBackgroundColor(BACKGROUND);
         toolbar.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(47)));
 
         toolbar.addView(toolbarButton("‹", view -> navigateBack()));
-        toolbar.addView(toolbarButton("⌂", view -> openHome()));
+        ImageView brandIcon = new ImageView(this);
+        brandIcon.setImageResource(R.mipmap.ic_launcher);
+        brandIcon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        brandIcon.setContentDescription("返回 Shadow 应用中心");
+        brandIcon.setOnClickListener(view -> openHome());
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(34), dp(34));
+        iconParams.setMargins(dp(2), 0, dp(6), 0);
+        toolbar.addView(brandIcon, iconParams);
         titleView = new TextView(this);
-        titleView.setText("Shadow");
-        titleView.setTextColor(Color.WHITE);
-        titleView.setTextSize(16);
+        titleView.setText("应用中心");
+        titleView.setTextColor(Color.rgb(238, 244, 246));
+        titleView.setTextSize(15);
+        titleView.setTypeface(Typeface.create("serif", Typeface.BOLD));
+        titleView.setLetterSpacing(0.06f);
         titleView.setGravity(Gravity.CENTER_VERTICAL);
-        titleView.setPadding(dp(10), 0, dp(6), 0);
+        titleView.setPadding(dp(4), 0, dp(6), 0);
         toolbar.addView(titleView, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.MATCH_PARENT, 1));
         toolbar.addView(toolbarButton("↻", view -> webView.reload()));
         toolbar.addView(toolbarButton("⋮", view -> showSettings(false)));
-        return toolbar;
+        shell.addView(toolbar);
+        View divider = new View(this);
+        divider.setBackgroundColor(Color.rgb(34, 58, 70));
+        shell.addView(divider, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
+        return shell;
     }
 
     private Button toolbarButton(String text, View.OnClickListener listener) {
         Button button = new Button(this);
         button.setText(text);
         button.setTextSize(20);
-        button.setTextColor(Color.rgb(203, 213, 225));
+        button.setTextColor(BRAND_CYAN);
         button.setBackgroundColor(Color.TRANSPARENT);
         button.setMinWidth(dp(44));
         button.setMinimumWidth(dp(44));
@@ -227,7 +249,7 @@ public class MainActivity extends Activity {
                 }
                 if (HOME_URL.equals(url)) {
                     currentModuleId = null;
-                    titleView.setText("Shadow");
+                    titleView.setText("应用中心");
                 } else if (url != null && url.startsWith("http")) {
                     updateCurrentModule(url);
                     if ("health".equals(currentModuleId)) {
@@ -305,7 +327,7 @@ public class MainActivity extends Activity {
         showingHealthOffline = false;
         showingHealthSnapshot = false;
         mainHandler.removeCallbacks(healthProbe);
-        titleView.setText("Shadow");
+        titleView.setText("应用中心");
         webView.loadUrl(HOME_URL);
         webView.clearHistory();
     }
