@@ -5,6 +5,7 @@ import android.net.Uri;
 
 import com.shadow.app.core.ModuleRegistry;
 import com.shadow.app.core.ServerConfig;
+import com.shadow.app.core.UrlTools;
 
 /** Resolves the health module endpoint for native ingestion workers. */
 final class HealthServerConfig {
