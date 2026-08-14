@@ -8,6 +8,25 @@ plugins {
 val samsungSdk = file("libs/samsung-health-data-api-1.1.0.aar")
 val samsungHealthEnabled = samsungSdk.exists()
         && !providers.gradleProperty("withoutSamsung").isPresent
+val releaseKeystore = file(providers.environmentVariable("SHADOW_KEYSTORE_PATH")
+    .orElse("/data/project/.secrets/shadow-app/shadow-release.jks").get())
+val releasePasswordFile = file(providers.environmentVariable("SHADOW_KEYSTORE_PASSWORD_FILE")
+    .orElse("/data/project/.secrets/shadow-app/shadow-release.password").get())
+val releaseSigningAvailable = releaseKeystore.isFile && releasePasswordFile.isFile
+val releaseRequested = gradle.startParameter.taskNames.any {
+    val taskName = it.substringAfterLast(":")
+    taskName.contains("release", ignoreCase = true)
+            || taskName.equals("assemble", ignoreCase = true)
+            || taskName.equals("build", ignoreCase = true)
+            || taskName.equals("bundle", ignoreCase = true)
+}
+
+if (releaseRequested && !releaseSigningAvailable) {
+    throw GradleException(
+        "Release signing material is unavailable. Use scripts/build-release.sh " +
+                "or set SHADOW_KEYSTORE_PATH and SHADOW_KEYSTORE_PASSWORD_FILE."
+    )
+}
 
 android {
     namespace = "com.shadow.app"
@@ -27,11 +46,25 @@ android {
         buildConfig = true
     }
 
+    signingConfigs {
+        if (releaseSigningAvailable) {
+            create("shadowRelease") {
+                val password = releasePasswordFile.readText().trim()
+                storeFile = releaseKeystore
+                storePassword = password
+                keyAlias = "shadow"
+                keyPassword = password
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") { isMinifyEnabled = false }
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            if (releaseSigningAvailable) {
+                signingConfig = signingConfigs.getByName("shadowRelease")
+            }
         }
     }
 
@@ -69,7 +102,7 @@ val validateModules by tasks.registering {
     doLast {
         @Suppress("UNCHECKED_CAST")
         val root = JsonSlurper().parseText(catalog.readText()) as Map<String, Any?>
-        require((root["schemaVersion"] as Number).toInt() == 1) {
+        require((root["schemaVersion"] as Number).toInt() == 2) {
             "modules.json: unsupported schemaVersion"
         }
         val modules = root["modules"] as? List<*>
@@ -84,10 +117,39 @@ val validateModules by tasks.registering {
                 "modules.json: invalid id $id"
             }
             require(ids.add(id)) { "modules.json: duplicate id $id" }
-            for (field in listOf("startPath", "healthPath")) {
-                val path = module[field] as? String ?: error("modules[$index].$field is required")
-                require(path.isEmpty() || path.startsWith("/")) {
-                    "modules.json: $id.$field must be empty or start with /"
+            val routes = module["routes"] as? List<*>
+                ?: error("modules[$index].routes must be an array")
+            require(routes.isNotEmpty()) { "modules.json: $id.routes must not be empty" }
+            require(routes.size <= 2) { "modules.json: $id.routes supports at most two routes" }
+            val routeServers = mutableSetOf<String>()
+            routes.forEachIndexed { routeIndex, rawRoute ->
+                @Suppress("UNCHECKED_CAST")
+                val route = rawRoute as? Map<String, Any?>
+                    ?: error("modules[$index].routes[$routeIndex] must be an object")
+                val server = route["server"] as? String
+                    ?: error("modules[$index].routes[$routeIndex].server is required")
+                require(server == "nas" || server == "cloud") {
+                    "modules.json: invalid route server for $id"
+                }
+                require(routeServers.add(server)) {
+                    "modules.json: duplicate $server route for $id"
+                }
+                val port = (route["port"] as? Number)?.toInt()
+                require(!route.containsKey("port") || port != null) {
+                    "modules.json: port must be a number for $id.$server"
+                }
+                require(port == null || port in 1..65535) {
+                    "modules.json: invalid port for $id.$server"
+                }
+                val startPath = route["startPath"] as? String
+                    ?: error("modules[$index].routes[$routeIndex].startPath is required")
+                require(startPath.startsWith("/")) {
+                    "modules.json: $id.$server.startPath must start with /"
+                }
+                val probePath = route["probePath"] as? String
+                    ?: error("modules[$index].routes[$routeIndex].probePath is required")
+                require(probePath.isEmpty() || probePath.startsWith("/")) {
+                    "modules.json: $id.$server.probePath must be empty or start with /"
                 }
             }
             val color = module["color"] as? String ?: error("modules[$index].color is required")

@@ -63,6 +63,30 @@ app/build/outputs/apk/debug/app-debug.apk
 ./gradlew -PwithoutSamsung=true assembleDebug
 ```
 
+## 发布签名
+
+正式 APK 固定使用 NAS 中的同一份发布密钥：
+
+```text
+nas:/data/project/.secrets/shadow-app/shadow-release.jks
+```
+
+不要把 JKS、密码文件或 `keystore.properties` 提交到 Git。已配置 `nas` SSH 主机的电脑统一使用：
+
+```bash
+./scripts/build-release.sh
+```
+
+脚本只在构建期间把签名材料复制到权限受限的临时目录，结束后立即删除。需要使用其他 SSH 主机或远端目录时，可设置 `SHADOW_SECRETS_HOST`、`SHADOW_REMOTE_SECRETS_DIR`。发布新版本前必须递增 `versionCode`。
+
+签名后的 APK 输出到：
+
+```text
+app/build/outputs/apk/release/app-release.apk
+```
+
+签名位置、证书指纹和恢复约定见 [发布签名规范](docs/release-signing.md)。
+
 ## 服务器配置
 
 首次启动会要求填写 NAS 地址，并可选填写云端域名。默认 NAS 地址：

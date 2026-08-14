@@ -3,6 +3,10 @@
 local.properties
 **/build/
 *.iml
+*.jks
+*.keystore
+keystore.properties
+*.password
 
 # Samsung Health Data SDK is proprietary and must be downloaded separately.
 app/libs/*.aar
