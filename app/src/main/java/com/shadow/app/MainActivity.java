@@ -100,12 +100,6 @@ public class MainActivity extends Activity {
         }
         if (Build.VERSION.SDK_INT >= 30) {
             window.setDecorFitsSystemWindows(false);
-            WindowInsetsController controller = window.getInsetsController();
-            if (controller != null) {
-                controller.setSystemBarsAppearance(0,
-                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                                | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
-            }
         } else {
             // Android 10 still lets the framework place content below opaque system bars.
             window.setStatusBarColor(BACKGROUND);
@@ -126,6 +120,7 @@ public class MainActivity extends Activity {
         screen.addView(webView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         setContentView(screen);
+        applySystemBarAppearance(window);
         applySystemBarInsets(screen);
 
         WebSettings settings = webView.getSettings();
@@ -243,6 +238,19 @@ public class MainActivity extends Activity {
             return windowInsets;
         });
         root.requestApplyInsets();
+    }
+
+    private void applySystemBarAppearance(Window window) {
+        if (Build.VERSION.SDK_INT < 30) {
+            return;
+        }
+        // Android 16's PhoneWindow can throw before setContentView() creates the DecorView.
+        WindowInsetsController controller = window.getDecorView().getWindowInsetsController();
+        if (controller != null) {
+            controller.setSystemBarsAppearance(0,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
+        }
     }
 
     private void setPaddingIfChanged(View view, int left, int top, int right, int bottom) {

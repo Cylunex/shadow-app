@@ -3,6 +3,7 @@ import groovy.json.JsonSlurper
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.parcelize")
 }
 
 val samsungSdk = file("libs/samsung-health-data-api-1.1.0.aar")
@@ -36,8 +37,8 @@ android {
         applicationId = "com.shadow.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
 
         buildConfigField("boolean", "SAMSUNG_HEALTH_AVAILABLE", samsungHealthEnabled.toString())
     }
