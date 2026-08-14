@@ -152,7 +152,13 @@ public class ScaleScanService extends Service {
                 }
             }
         };
-        registerReceiver(btStateReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
+        try {
+            registerReceiver(btStateReceiver,
+                    new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
+        } catch (RuntimeException e) {
+            Log.e(TAG, "register Bluetooth receiver failed", e);
+            btStateReceiver = null;
+        }
     }
 
     private final Runnable finishMeasurementMode = () -> {
@@ -178,8 +184,15 @@ public class ScaleScanService extends Service {
                 requestedMeasurement
                         ? "称重模式：" + (TIMED_SCAN_MS / 60_000) + " 分钟内上秤即记"
                         : "等待上秤…");
-        startForeground(NOTIFICATION_ID, n,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        try {
+            startForeground(NOTIFICATION_ID, n,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        } catch (RuntimeException e) {
+            Log.e(TAG, "start foreground failed", e);
+            prefs.edit().putBoolean(HealthFeature.KEY_SCALE_SCAN, false).apply();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         handler.removeCallbacks(finishMeasurementMode);
         if (requestedMeasurement) {
             // 每次点击都重建扫描。三星系统偶尔会留下“仍在运行但收不到广播”的会话，
@@ -251,13 +264,20 @@ public class ScaleScanService extends Service {
             }
             stopScan();
         }
-        BluetoothManager bm = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-        BluetoothAdapter adapter = bm == null ? null : bm.getAdapter();
-        if (adapter == null || !adapter.isEnabled()) {
-            updateNotification("蓝牙未开启");
+        BluetoothAdapter adapter;
+        try {
+            BluetoothManager bm = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+            adapter = bm == null ? null : bm.getAdapter();
+            if (adapter == null || !adapter.isEnabled()) {
+                updateNotification("蓝牙未开启");
+                return;
+            }
+            scanner = adapter.getBluetoothLeScanner();
+        } catch (SecurityException e) {
+            Log.e(TAG, "Bluetooth connect permission missing", e);
+            updateNotification("缺少蓝牙连接权限");
             return;
         }
-        scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) {
             updateNotification("蓝牙不可用");
             return;
@@ -275,8 +295,12 @@ public class ScaleScanService extends Service {
                 }
                 byte[] s400 = result.getScanRecord().getServiceData(uuidMibeacon);
                 if (s400 != null && result.getDevice() != null) {
-                    String address = result.getDevice().getAddress();
-                    handler.post(() -> handleS400Frame(address, s400));
+                    try {
+                        String address = result.getDevice().getAddress();
+                        handler.post(() -> handleS400Frame(address, s400));
+                    } catch (SecurityException e) {
+                        Log.e(TAG, "cannot read Bluetooth device address", e);
+                    }
                 }
             }
 
@@ -342,6 +366,8 @@ public class ScaleScanService extends Service {
     private boolean hasScanPermission() {
         if (Build.VERSION.SDK_INT >= 31) {
             return checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+                    == PackageManager.PERMISSION_GRANTED
+                    && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
                     == PackageManager.PERMISSION_GRANTED;
         }
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)

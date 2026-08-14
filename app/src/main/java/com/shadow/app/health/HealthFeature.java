@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.util.Log;
 import android.widget.Toast;
 
 import com.shadow.app.core.ServerConfig;
@@ -17,6 +18,7 @@ import java.util.Locale;
 
 /** Lifecycle and permission boundary for optional native health capabilities. */
 public final class HealthFeature {
+    private static final String TAG = "HealthFeature";
     public static final String KEY_INGEST_TOKEN = "ingest_token";
     public static final String KEY_SCALE_SCAN = "scale_scan_enabled";
     public static final String KEY_SCALE_BINDKEY = "scale_bindkey";
@@ -37,10 +39,20 @@ public final class HealthFeature {
             startScaleService(false);
         }
         if (prefs.getBoolean(SamsungSync.PREF_ENABLED, false) && SamsungSync.isAvailable()) {
-            SamsungSync.schedule(activity.getApplicationContext());
+            try {
+                SamsungSync.schedule(activity.getApplicationContext());
+            } catch (RuntimeException e) {
+                Log.e(TAG, "restore Samsung sync failed", e);
+                prefs.edit().putBoolean(SamsungSync.PREF_ENABLED, false).apply();
+            }
         }
         if (prefs.getBoolean(Reminders.PREF_ENABLED, false)) {
-            Reminders.schedule(activity.getApplicationContext());
+            try {
+                Reminders.schedule(activity.getApplicationContext());
+            } catch (RuntimeException e) {
+                Log.e(TAG, "restore reminders failed", e);
+                prefs.edit().putBoolean(Reminders.PREF_ENABLED, false).apply();
+            }
         }
     }
 
@@ -85,8 +97,9 @@ public final class HealthFeature {
             activity.requestPermissions(missing.toArray(new String[0]), REQUEST_PERMISSIONS);
             return;
         }
-        startScaleService(true);
-        Toast.makeText(activity, "秤监听已开启 3 分钟，请上秤", Toast.LENGTH_SHORT).show();
+        if (startScaleService(true)) {
+            Toast.makeText(activity, "秤监听已开启 3 分钟，请上秤", Toast.LENGTH_SHORT).show();
+        }
     }
 
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
@@ -125,12 +138,23 @@ public final class HealthFeature {
         }
     }
 
-    private void startScaleService(boolean timed) {
+    private boolean startScaleService(boolean timed) {
         Intent intent = new Intent(activity, ScaleScanService.class);
         if (timed) {
             intent.putExtra(ScaleScanService.EXTRA_TIMED, true);
         }
-        activity.startForegroundService(intent);
+        try {
+            activity.startForegroundService(intent);
+            return true;
+        } catch (RuntimeException e) {
+            Log.e(TAG, "start scale foreground service failed", e);
+            if (!timed) {
+                prefs.edit().putBoolean(KEY_SCALE_SCAN, false).apply();
+            }
+            Toast.makeText(activity,
+                    "体脂秤监听启动失败，请检查蓝牙与通知权限", Toast.LENGTH_LONG).show();
+            return false;
+        }
     }
 
     private List<String> missingScalePermissions() {
@@ -139,6 +163,10 @@ public final class HealthFeature {
             if (activity.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
                     != PackageManager.PERMISSION_GRANTED) {
                 result.add(Manifest.permission.BLUETOOTH_SCAN);
+            }
+            if (activity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) {
+                result.add(Manifest.permission.BLUETOOTH_CONNECT);
             }
         } else if (activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
