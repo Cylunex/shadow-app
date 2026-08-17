@@ -8,6 +8,9 @@ local.properties
 keystore.properties
 *.password
 
+# Deployment-specific Platform endpoints. Copy from the tracked example and keep local.
+config/platform.local.properties
+
 # Samsung Health Data SDK is proprietary and must be downloaded separately.
 app/libs/*.aar
 !app/libs/README.md

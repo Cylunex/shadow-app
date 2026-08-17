@@ -93,7 +93,7 @@ class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             conn = URL(HealthServerConfig.bare(target)).openConnection() as HttpURLConnection
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
-            HealthHttpPost.applyAuth(conn, target, token)  // frp Basic 时 token 走 X-Ingest-Token
+            HealthHttpPost.applyAuth(conn, token)
             if (conn.responseCode != 200) {
                 null
             } else {

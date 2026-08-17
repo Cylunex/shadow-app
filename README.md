@@ -1,6 +1,7 @@
 # Shadow App
 
-Shadow App 是 Shadow 系列服务的独立 Android 壳。它提供一个原生应用中心，并在同一个安全、可配置的 WebView 容器里打开各个独立部署的 Web 应用。
+Shadow App 是 Shadow 系列服务的独立 Android 壳。它接入 Shadow Platform Catalog 与
+Identity，在同一个安全 WebView 容器里打开各个独立部署的 Web 应用。
 
 首版内置：
 
@@ -12,10 +13,10 @@ Android 包名为 `com.shadow.app`，应用显示名为 `Shadow`，最低支持 
 ## 功能
 
 - 原生应用中心和统一的返回、主页、刷新、设置导航
-- NAS 与云端双环境配置，模块按端口或目录独立路由和故障切换
+- Platform Catalog 规范入口与 NAS DNS 别名自动路由和故障切换
+- Platform Identity OIDC / Forward Auth 登录跳转与 Cookie 持久化
 - Web 登录 Cookie 持久化
 - 网页文件上传、下载和外部链接处理
-- HTTP Basic 入口认证
 - 页面加载失败时的本地错误页
 - 健康模块断网记录、自动补发和最近页面快照回放
 - 保留 `ShellBridge.startScaleScan()`，兼容现有 shadow-health 网页
@@ -37,6 +38,14 @@ Android 包名为 `com.shadow.app`，应用显示名为 `Shadow`，最低支持 
    ```properties
    sdk.dir=/path/to/Android/sdk
    ```
+4. 从模板创建不入库的 Platform 部署配置：
+
+   ```bash
+   cp config/platform.local.properties.example config/platform.local.properties
+   ```
+
+   把示例 Identity、健康、股票和 NAS URL 替换为当前环境地址。也可以使用模板中列出的
+   `SHADOW_*` 环境变量，供 CI 或其他构建机注入。
 
 构建：
 
@@ -87,53 +96,38 @@ app/build/outputs/apk/release/app-release.apk
 
 签名位置、证书指纹和恢复约定见 [发布签名规范](docs/release-signing.md)。
 
-## 服务器配置
+## Platform 接入
 
-首次启动会要求填写 NAS 地址，并可选填写云端域名。默认 NAS 地址：
+应用地址不再由用户输入。`config/modules.template.json` 是可提交的脱敏 Platform App
+Catalog 模板；真实部署地址只保存在被 Git 忽略的
+`config/platform.local.properties`，构建时生成 APK 内使用的 `modules.json` 和网络安全配置。
+清单声明：
 
-```text
-http://192.168.1.100
-```
+- Platform Identity issuer；
+- 每个应用的 HTTPS 规范入口；
+- NAS 等 DNS 别名；
+- OIDC/Forward Auth 模式和准入组；
+- 无需登录的健康检查路径；
+- 移动端展示与原生能力允许列表。
 
-模块路由由 `app/src/main/assets/modules.json` 拼接。当前健康和股票都指向 NAS 的 `55080` 端口：
-
-```text
-http://192.168.1.100:55080/shealth/
-http://192.168.1.100:55080/stock/
-```
-
-云端 FRP 把 NAS 门户 `55080` 映射为远端 `20001`，因此填写云端域名后，健康和股票也具有以下备用入口：
-
-```text
-http://shadow.example.com:20001/shealth/
-http://shadow.example.com:20001/stock/
-```
-
-云端地址的协议必须与 FRP 入口一致；直接 TCP 转发 HTTP 时应填写 `http://域名`。
-
-模块可仅声明 `nas` 或 `cloud`，也可同时声明两条路由实现模块级自动切换。Garden 这类仅部署在云端的应用只需配置云端目录，不会影响健康和股票的 NAS 地址。
-
-带 HTTP Basic 的入口可以写为：
-
-```text
-https://user:password@example.com
-```
-
-凭据只保存在 Android SharedPreferences 中，传给 WebView 前会从显示 URL 中移除。
+壳默认打开规范入口，并按模块记忆可用别名；入口失败时只切换当前模块。设置页仅保留健康
+同步 Token、体脂秤、三星健康和提醒，不再出现服务器地址。完整约定见
+[模块接入规范](docs/module-integration.md)。
 
 ## 目录
 
 ```text
 app/src/main/
-├── assets/                 # 应用中心、错误页、模块清单
+├── assets/                 # 应用中心与错误页
 ├── java/com/shadow/app/
 │   ├── MainActivity.java   # 通用 WebView 壳
-│   ├── core/               # 模块注册表、地址配置
+│   ├── core/               # Platform Catalog 投影与入口选择
 │   └── health/             # BLE 与健康原生适配
 ├── kotlin/.../health/      # 健康提醒
 app/src/samsung/            # 有 Samsung AAR 时编译
 app/src/noSamsung/          # 无 Samsung AAR 时的兼容实现
 docs/                       # 接入规范
+config/                     # Catalog 模板与本地部署配置示例
 ```
 
 ## 当前边界
@@ -141,4 +135,4 @@ docs/                       # 接入规范
 - 壳不合并各业务项目代码，只承载和调度网页入口。
 - 各模块继续负责自己的登录、业务路由和发布。
 - 原生能力必须声明在模块清单中，并在 Android 端有明确的权限边界。
-- 当前不包含 Agent、统一账号或后台服务运维能力。
+- 壳接入 Platform Identity，但不保存 OIDC Token，也不承载 Agent 或后台服务运维能力。

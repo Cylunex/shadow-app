@@ -107,6 +107,7 @@ public class MainActivity extends Activity {
         }
 
         prefs = getSharedPreferences(ServerConfig.PREFS_NAME, MODE_PRIVATE);
+        ServerConfig.discardLegacyOverrides(this);
         registry = ModuleRegistry.load(this);
         healthFeature = new HealthFeature(this);
 
@@ -161,9 +162,6 @@ public class MainActivity extends Activity {
         webView.setDownloadListener(this::download);
 
         openHome();
-        if (!ServerConfig.isConfigured(this)) {
-            mainHandler.post(() -> showSettings(true));
-        }
         // Native health integrations are optional. Restore them after the shell is visible and
         // never let a vendor-specific failure take down the web container during app startup.
         mainHandler.post(() -> {
@@ -211,7 +209,7 @@ public class MainActivity extends Activity {
         toolbar.addView(titleView, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.MATCH_PARENT, 1));
         toolbar.addView(toolbarButton("↻", view -> webView.reload()));
-        toolbar.addView(toolbarButton("⋮", view -> showSettings(false)));
+        toolbar.addView(toolbarButton("⋮", view -> showSettings()));
         shell.addView(toolbar);
         View divider = new View(this);
         divider.setBackgroundColor(Color.rgb(34, 58, 70));
@@ -297,7 +295,7 @@ public class MainActivity extends Activity {
                     return false;
                 }
                 if (url.startsWith("http://") || url.startsWith("https://")) {
-                    if (ServerConfig.isTrustedModuleUrl(MainActivity.this, registry, url)) {
+                    if (ServerConfig.isTrustedNavigationUrl(registry, url)) {
                         return false;
                     }
                     return openExternal(url);
@@ -341,12 +339,8 @@ public class MainActivity extends Activity {
             public void onReceivedHttpAuthRequest(WebView view,
                                                   android.webkit.HttpAuthHandler handler,
                                                   String host, String realm) {
-                String[] credentials = ServerConfig.credentialsForHost(MainActivity.this, host);
-                if (credentials == null) {
-                    handler.cancel();
-                } else {
-                    handler.proceed(credentials[0], credentials[1]);
-                }
+                // Platform URLs never embed credentials; browser and WebView auth use app sessions.
+                handler.cancel();
             }
 
             @Override
@@ -405,8 +399,7 @@ public class MainActivity extends Activity {
         }
         String targetUrl = ServerConfig.moduleUrl(this, registry, module.id);
         if (targetUrl.isEmpty()) {
-            Toast.makeText(this, "请先配置此应用所在的服务器", Toast.LENGTH_SHORT).show();
-            showSettings(false);
+            Toast.makeText(this, "Platform 未提供此应用入口", Toast.LENGTH_SHORT).show();
             return;
         }
         currentModuleId = module.id;
@@ -422,6 +415,11 @@ public class MainActivity extends Activity {
     }
 
     private void updateCurrentModule(String url) {
+        if (registry.isIdentityUrl(url)) {
+            AppModule current = currentModuleId == null ? null : registry.get(currentModuleId);
+            titleView.setText(current == null ? "Shadow 登录" : current.name + " · 登录");
+            return;
+        }
         String moduleId = moduleIdForUrl(url);
         currentModuleId = moduleId;
         AppModule module = moduleId == null ? null : registry.get(moduleId);
@@ -430,7 +428,7 @@ public class MainActivity extends Activity {
 
     private String moduleIdForUrl(String url) {
         for (AppModule module : registry.all()) {
-            for (String candidate : ServerConfig.moduleUrls(this, registry, module.id)) {
+            for (String candidate : ServerConfig.moduleUrls(registry, module.id)) {
                 String moduleUrl = UrlTools.bare(candidate);
                 if (!moduleUrl.isEmpty()
                         && (url.equals(moduleUrl) || url.startsWith(moduleUrl))) {
@@ -519,7 +517,7 @@ public class MainActivity extends Activity {
         if (currentPageUrl == null) {
             return false;
         }
-        for (String candidate : ServerConfig.moduleUrls(this, registry, "health")) {
+        for (String candidate : ServerConfig.moduleUrls(registry, "health")) {
             String healthUrl = UrlTools.bare(candidate);
             if (!healthUrl.isEmpty()
                     && (currentPageUrl.equals(healthUrl) || currentPageUrl.startsWith(healthUrl))) {
@@ -529,20 +527,7 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    private void showSettings(boolean firstRun) {
-        EditText nasServer = new EditText(this);
-        nasServer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        nasServer.setSingleLine(true);
-        nasServer.setHint("NAS 地址，如 http://192.168.1.100");
-        nasServer.setText(ServerConfig.nas(this).isEmpty()
-                ? ServerConfig.DEFAULT_NAS_URL : ServerConfig.nas(this));
-
-        EditText cloudServer = new EditText(this);
-        cloudServer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        cloudServer.setSingleLine(true);
-        cloudServer.setHint("云端域名，可留空");
-        cloudServer.setText(ServerConfig.cloud(this));
-
+    private void showSettings() {
         EditText token = new EditText(this);
         token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         token.setHint("健康服务 INGEST_TOKEN");
@@ -569,16 +554,14 @@ public class MainActivity extends Activity {
         reminder.setChecked(prefs.getBoolean(Reminders.PREF_ENABLED, false));
 
         TextView hint = new TextView(this);
-        hint.setText("这里只配置 NAS 主机和云端域名。各应用使用哪个服务器、端口或目录，"
-                + "由 modules.json 的 routes 统一管理；未配置对应服务器的应用会提示补充地址。"
-                + "地址可包含 HTTP Basic 用户名和密码。");
+        hint.setText("应用地址和认证方式由 Shadow Platform Catalog 管理，无需手动填写。\n"
+                + "统一登录：" + registry.identityIssuer() + "\n"
+                + "壳会在应用规范域名与本地 DNS 别名之间自动切换；这里只保留健康设备设置。");
         hint.setTextSize(12);
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(18), dp(6), dp(18), 0);
-        content.addView(nasServer);
-        content.addView(cloudServer);
         content.addView(token);
         content.addView(scale);
         content.addView(bindkey);
@@ -587,29 +570,14 @@ public class MainActivity extends Activity {
         content.addView(hint);
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle("Shadow 连接设置")
+                .setTitle("Shadow 平台与设备")
                 .setView(content)
                 .setPositiveButton("保存", (dialog, which) -> {
-                    String nasUrl = UrlTools.normalizeBase(nasServer.getText().toString());
-                    String cloudUrl = UrlTools.normalizeBase(cloudServer.getText().toString());
-                    if (nasUrl.isEmpty() && cloudUrl.isEmpty()) {
-                        nasUrl = ServerConfig.DEFAULT_NAS_URL;
-                    }
-                    ServerConfig.save(this, nasUrl, cloudUrl);
                     healthFeature.applySettings(
                             token.getText().toString(), scale.isChecked(),
                             bindkey.getText().toString(), samsung.isChecked(), reminder.isChecked());
-                    if (currentModuleId == null) {
-                        webView.reload();
-                    } else {
-                        openModule(currentModuleId);
-                    }
-                });
-        if (firstRun) {
-            builder.setCancelable(false);
-        } else {
-            builder.setNegativeButton("取消", null);
-        }
+                })
+                .setNegativeButton("取消", null);
         builder.show();
     }
 
@@ -620,10 +588,6 @@ public class MainActivity extends Activity {
             String cookie = CookieManager.getInstance().getCookie(url);
             if (cookie != null) {
                 request.addRequestHeader("Cookie", cookie);
-            }
-            String basic = ServerConfig.basicAuthHeaderForUrl(this, url);
-            if (basic != null) {
-                request.addRequestHeader("Authorization", basic);
             }
             String filename = URLUtil.guessFileName(url, contentDisposition, mimeType);
             request.setNotificationVisibility(
@@ -716,7 +680,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void openSettings() {
-            mainHandler.post(() -> showSettings(false));
+            mainHandler.post(MainActivity.this::showSettings);
         }
 
         /** Legacy alias used by the health offline page. */

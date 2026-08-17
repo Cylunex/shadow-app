@@ -103,7 +103,7 @@ final class SnapshotCache {
         if (path == null || path.isEmpty()) {
             path = "/";
         }
-        // 子路径部署：serverUrl 可能带 path 前缀（如 http://NAS:55080/shealth）。
+        // Platform 别名可能带内部 path 前缀（如 http://nas.example.com/shealth）。
         // 下面的 cacheable/排除名单全按应用内路径写，必须先剥前缀再比；
         // 同域但不在前缀下的请求（服务面板、/stock/ 等其他应用）一律不代理。
         String prefix = pathPrefix(serverUrl);
@@ -131,8 +131,7 @@ final class SnapshotCache {
                 // 负缓存窗内：直接回放（无缓存则交回原生），不逐请求干等连接超时
                 return replay(ctx, url, request.isForMainFrame());
             }
-            // serverUrl 带 user:pass@（frp Basic 验证）时代理请求自带验证头
-            return fetchAndStore(ctx, request, url, HealthServerConfig.basicAuthHeader(serverUrl));
+            return fetchAndStore(ctx, request, url);
         } catch (ConnectFailure e) {
             offlineUntil = System.currentTimeMillis() + OFFLINE_NEGATIVE_MS;
             WebResourceResponse cached = replay(ctx, url, request.isForMainFrame());
@@ -187,7 +186,7 @@ final class SnapshotCache {
     // ---- 在线：代理取回 + 落缓存（304 复验直接回放磁盘） ----
 
     private static WebResourceResponse fetchAndStore(
-            Context ctx, WebResourceRequest request, String url, String basicAuth)
+            Context ctx, WebResourceRequest request, String url)
             throws IOException {
         JSONObject meta = readMeta(ctx, url);  // 已有快照 → 带条件头复验
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
@@ -199,19 +198,14 @@ final class SnapshotCache {
             if (reqHeaders != null) {
                 for (Map.Entry<String, String> h : reqHeaders.entrySet()) {
                     String k = h.getKey();
-                    // 压缩与 WebView 自己的条件头都跳过：落盘要的是完整明文体；
-                    // 配了 Basic 凭据时 Authorization 由下面统一注入，不透传
+                    // 压缩与 WebView 自己的条件头都跳过：落盘要的是完整明文体。
                     if ("Accept-Encoding".equalsIgnoreCase(k)
                             || "If-None-Match".equalsIgnoreCase(k)
-                            || "If-Modified-Since".equalsIgnoreCase(k)
-                            || (basicAuth != null && "Authorization".equalsIgnoreCase(k))) {
+                            || "If-Modified-Since".equalsIgnoreCase(k)) {
                         continue;
                     }
                     conn.setRequestProperty(k, h.getValue());
                 }
-            }
-            if (basicAuth != null) {
-                conn.setRequestProperty("Authorization", basicAuth);
             }
             String cookie = CookieManager.getInstance().getCookie(url);
             if (cookie != null) {

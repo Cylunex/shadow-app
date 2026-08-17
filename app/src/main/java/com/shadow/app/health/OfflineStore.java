@@ -336,7 +336,7 @@ final class OfflineStore {
             conn = (HttpURLConnection) new URL(HealthServerConfig.bare(target)).openConnection();
             conn.setConnectTimeout(8000);
             conn.setReadTimeout(8000);
-            HealthHttpPost.applyAuth(conn, target, token);  // frp Basic 时 token 走 X-Ingest-Token
+            HealthHttpPost.applyAuth(conn, token);
             if (conn.getResponseCode() != 200) {
                 return false;
             }

@@ -89,7 +89,7 @@
   <section class="hero"><img src="brand/banner.png" alt="影 Shadow · 掌控数据，洞察未来，守护自己"></section>
   <div class="section-head"><h1>我的空间</h1><span id="summary">正在载入</span></div>
   <section id="modules" class="grid"></section>
-  <button class="config" onclick="openSettings()">连接设置 · CONNECTION</button>
+  <button class="config" onclick="openSettings()">平台与设备 · PLATFORM</button>
   <footer><span>SHADOW APP</span><span>掌控数据 · 洞察未来 · 守护自己</span></footer>
 </main>
 <script>
@@ -127,7 +127,7 @@
     root.innerHTML=modules.map(m=>`<button class="card" onclick="openModule('${m.id}')">
       ${visual(m.id)}<div class="card-body"><div class="card-top"><span class="module-icon">${icons[m.icon]||icons.web}</span><span class="arrow">↗</span></div>
       <div class="name">${escapeHtml(m.name)}</div><div class="desc">${escapeHtml(m.description)}</div>
-      <div class="tags">${(m.capabilities||[]).map(c=>`<span class="tag">${labels[c]||escapeHtml(c)}</span>`).join('')}</div></div></button>`).join('');
+      <div class="tags"><span class="tag">PLATFORM</span>${(m.capabilities||[]).map(c=>`<span class="tag">${labels[c]||escapeHtml(c)}</span>`).join('')}</div></div></button>`).join('');
   }
   render();
 </script>

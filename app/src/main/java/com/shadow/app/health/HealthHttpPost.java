@@ -21,7 +21,7 @@ final class HealthHttpPost {
             connection.setConnectTimeout(connectTimeoutMs);
             connection.setReadTimeout(readTimeoutMs);
             connection.setDoOutput(true);
-            applyAuth(connection, url, token);
+            applyAuth(connection, token);
             connection.setRequestProperty("Content-Type", "application/json");
             byte[] body = json.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(body.length);
@@ -41,13 +41,7 @@ final class HealthHttpPost {
         }
     }
 
-    static void applyAuth(HttpURLConnection connection, String url, String token) {
-        String basic = HealthServerConfig.basicAuthHeader(url);
-        if (basic == null) {
-            connection.setRequestProperty("Authorization", "Bearer " + token);
-        } else {
-            connection.setRequestProperty("Authorization", basic);
-            connection.setRequestProperty("X-Ingest-Token", token);
-        }
+    static void applyAuth(HttpURLConnection connection, String token) {
+        connection.setRequestProperty("Authorization", "Bearer " + token);
     }
 }

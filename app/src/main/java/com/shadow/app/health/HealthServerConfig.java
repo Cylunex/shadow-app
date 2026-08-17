@@ -30,7 +30,7 @@ final class HealthServerConfig {
 
     static String matching(Context context, Uri requestUri) {
         ModuleRegistry registry = ModuleRegistry.load(context);
-        for (String healthUrl : ServerConfig.moduleUrls(context, registry, "health")) {
+        for (String healthUrl : ServerConfig.moduleUrls(registry, "health")) {
             if (SnapshotCache.sameOrigin(requestUri, healthUrl)) {
                 return trimTrailingSlash(healthUrl);
             }
@@ -40,10 +40,6 @@ final class HealthServerConfig {
 
     static String bare(String url) {
         return UrlTools.bare(url);
-    }
-
-    static String basicAuthHeader(String url) {
-        return ServerConfig.basicAuthHeader(url);
     }
 
     private static String trimTrailingSlash(String value) {

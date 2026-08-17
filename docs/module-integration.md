@@ -1,168 +1,103 @@
-# Shadow App 模块接入规范 v2
+# Shadow App 模块接入规范 v3
 
-本文定义 Web 应用接入 Shadow App 的最小约定。目标是让新增模块只修改模块清单和反向代理配置，不修改通用 WebView 壳。
+Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用户输入 NAS 地址、云端
+域名、端口或子目录。应用入口、别名、认证方式和探活路径均由审查过的构建配置声明。
 
-## 1. 部署模型
+## 1. 边界
 
-壳只配置两个稳定的服务环境：
+- Platform Catalog 是应用身份、规范入口、认证模式和健康检查的来源。
+- Shadow App 只补充移动端展示和原生能力字段，不代理业务请求。
+- 浏览器页面使用各应用自己的 OIDC/Forward Auth 会话；原生后台同步继续使用项目级 Bearer。
+- Platform Identity 是 WebView 的受信导航目标，但不是业务模块，也不能调用原生桥接。
+- 清单随 APK 发布，不在运行时下载未签名的远程目录，避免入口被远程篡改。
+- 真实部署域名和端口只存在于被 Git 忽略的本地属性文件或 CI 环境变量中。
 
-```text
-NAS    http://192.168.1.100
-云端   https://shadow.example.com
-```
+## 2. 清单结构
 
-模块清单只描述应用在各环境中的端口和目录。例如健康、股票仅部署在 NAS，Garden 仅部署在云端：
-
-```json
-{
-  "id": "garden",
-  "routes": [
-    {
-      "server": "cloud",
-      "startPath": "/garden/",
-      "probePath": "/garden/healthz"
-    }
-  ]
-}
-```
-
-同一模块可以同时声明 `nas`、`cloud` 两条路由。壳会记住每个模块自己的活动路由，当前路由探活失败时只切换该模块，不影响其他应用。只声明一条路由的模块不会被错误地切到另一台服务器。
-
-当前 NAS 门户 `55080` 由 FRP 映射到云端 `20001`。健康和股票均声明两条相同路径的路由：内网使用 `nas:55080`，外网使用 `cloud:20001`。
-
-## 2. 模块清单
-
-清单位于：
-
-```text
-app/src/main/assets/modules.json
-```
-
-顶层格式：
+可提交的清单模板位于 `config/modules.template.json`，真实入口由不入库的
+`config/platform.local.properties` 提供。Gradle 构建时将二者合成为生成目录中的
+`assets/modules.json`：
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
+  "platform": {
+    "catalogVersion": 1,
+    "identityIssuer": "https://auth.example.com"
+  },
   "modules": []
 }
 ```
 
-单个模块字段：
+模块同时包含 Platform 字段和移动端字段：
 
-| 字段 | 必填 | 说明 |
-|---|---:|---|
-| `id` | 是 | 稳定标识，格式 `[a-z][a-z0-9-]{1,31}`，发布后不得改名 |
-| `name` | 是 | 应用中心显示名称 |
-| `description` | 是 | 一行功能说明 |
-| `routes` | 是 | 一至两条模块部署路由，同一 `server` 不得重复 |
-| `icon` | 是 | 壳内置图标语义名，当前支持 `heart`、`chart`、`web` |
-| `color` | 是 | `#RRGGBB` 主题色 |
-| `enabled` | 是 | 是否在应用中心展示 |
-| `capabilities` | 是 | 能力声明，仅声明实际需要的能力 |
+| 字段 | 来源 | 说明 |
+|---|---|---|
+| `id` | Platform | 稳定 `app_id` |
+| `canonical_url` | Platform | 公网规范入口，必须为 HTTPS |
+| `aliases` | Platform/部署 | NAS 等备用入口；首版允许局域网 HTTP |
+| `auth.mode` | Platform | `oidc`、`forward-auth` 等认证模式 |
+| `auth.groups` | Platform | 应用最小准入组 |
+| `health_path` | Platform | 无需登录、返回 200 的探活路径 |
+| `name`、`description` | Mobile | 应用中心文案 |
+| `icon`、`color` | Mobile | 移动端展示 |
+| `enabled` | Mobile | 是否展示 |
+| `capabilities` | Mobile | 原生能力允许列表 |
 
-单条 `routes` 路由字段：
-
-| 字段 | 必填 | 说明 |
-|---|---:|---|
-| `server` | 是 | `nas` 或 `cloud` |
-| `port` | 否 | 覆盖环境根地址端口，适合 NAS 上每个应用使用独立端口 |
-| `startPath` | 是 | 入口目录，以 `/` 开头；目录入口保留尾斜杠 |
-| `probePath` | 是（可空） | 无需登录、返回 HTTP 200 的通用探活路径；留空时只能打开，不能自动判断可达性 |
-
-NAS 独立端口示例：
-
-```json
-{
-  "server": "nas",
-  "port": 55080,
-  "startPath": "/shealth/",
-  "probePath": "/shealth/healthz"
-}
-```
-
-如果服务直接位于端口根目录，可把 `startPath` 写成 `/`、`probePath` 写成 `/healthz`。
-
-当前能力名：
-
-| 能力 | 含义 |
-|---|---|
-| `web` | 标准 WebView 页面 |
-| `health.scale` | 允许健康模块调用体脂秤桥接 |
-| `health.samsung` | 使用三星健康只读同步 |
-| `notification` | 模块具有本地通知任务 |
-
-## 3. Web 应用要求
-
-模块必须满足：
-
-1. 支持移动端 viewport 和触摸操作。
-2. 支持部署在子路径，不能假设自己一定运行在 `/`。
-3. 页面、静态文件、表单、重定向和异步请求都必须保留部署前缀。
-4. `startPath` 必须可通过 GET 打开；未登录时应跳转到模块自己的登录页。
-5. 登录 Cookie 应把 `Path` 收窄到模块前缀，避免泄漏给同域其他模块。
-6. 导出文件应使用正确的 `Content-Disposition` 和 MIME 类型。
-7. 外部网站、电话、邮件等链接由系统应用打开，不应依赖 WebView 内跳转。
-8. 页面不能依赖壳注入的私密 Token；业务鉴权仍由模块自己的 Cookie/会话负责。
-
-## 4. 反向代理约定
-
-反向代理应保留客户端可见前缀，后端需要知道前缀时使用统一请求头：
+`health_path` 相对每个入口解析。例如规范入口 `https://health.example.com/` 与别名
+`http://nas.example.com/shealth/` 共用 `/healthz`，得到：
 
 ```text
-X-Forwarded-Prefix: /<module-id>
-X-Forwarded-Proto: $scheme
-X-Forwarded-Host: $host
+https://health.example.com/healthz
+http://nas.example.com/shealth/healthz
 ```
 
-目录入口应把无尾斜杠地址重定向到有尾斜杠地址，例如：
+规范入口始终排在第一位。壳记住每个模块最后可用的入口；当前入口失败时只探测并切换该
+模块的别名，不影响其他应用。旧版保存的 NAS/云端地址和 `nas`/`cloud` 活动路由会被忽略。
 
-```text
-/stock  -> /stock/
-```
+## 3. 登录与 WebView
 
-`probePath` 应快速、无副作用、无需业务登录，仅用于判断对应部署入口是否可达。该机制属于通用壳能力，与健康模块没有绑定关系。
+WebView 允许以下来源留在壳内：
 
-## 5. 原生桥接约定
+1. 所有模块规范入口与别名的 Origin；
+2. `platform.identityIssuer` 的 Origin。
 
-普通模块默认没有原生权限。新增原生能力时必须同时完成：
+其他 HTTP(S) 链接交给系统浏览器。跳转到 Identity 时保留当前模块上下文和 Cookie，完成
+OIDC/Forward Auth 后返回原模块。Identity 页面不能获得健康桥接权限；桥接仍需同时满足
+当前模块 ID 与模块 URL。
 
-1. 在 `capabilities` 声明能力名。
-2. 在独立 feature 包实现，不能把领域代码写进 `MainActivity`。
-3. 调用前同时校验当前模块 ID、页面 URL 和可信 Origin/路径。
-4. Android 敏感权限必须在用户主动开启功能时请求。
-5. 服务端写入接口使用单独的受限 Token，并保证幂等。
-6. 文档写清数据范围、后台频率、关闭方式和失败重试语义。
+## 4. 新应用接入
 
-现有 `shadow-health` 页面使用历史契约：
+1. 先在 `shadow-platform/catalog/apps.yml` 登记稳定 `app_id`、规范入口、认证模式、组和
+   `health_path`。
+2. 完成 DNS、TLS、OIDC 回调和无需登录的 `/healthz`。
+3. 在 `config/modules.template.json` 添加移动端文案、图标和能力声明，并在本地部署配置或
+   CI 环境变量中提供已审查的生产入口。
+4. 若有 NAS 别名，确保路径、静态资源、重定向和 Cookie Path 均保留内部前缀。
+5. 运行 `./gradlew validateModules`，并分别验证公网和局域网探活。
 
-```javascript
-window.ShellBridge?.startScaleScan?.()
-```
+不要把真实部署域名、Token、密码、OIDC client secret 或带 user-info 的 URL 写入 Git。
+本地部署配置必须保持在 `.gitignore` 中；构建产物中的 URL 仍应视为公开信息。
 
-壳只在当前模块为 `health` 且页面位于健康模块路径时执行，其他页面调用会被忽略。
+## 5. 原生能力
 
-后续新增桥接应使用领域前缀，例如 `startVerseSession`，并保持相同的来源校验。不要提供通用文件、Shell、数据库或任意 HTTP 调用桥接。
+普通 Web 模块默认只有 `web`。新增原生能力必须：
 
-## 6. 版本与兼容
+1. 在 `capabilities` 声明；
+2. 在独立 feature 包实现；
+3. 同时校验当前模块和可信 URL；
+4. 在用户主动启用时请求 Android 权限；
+5. 后台写入使用独立 Service Bearer，并保证幂等与审计。
 
-- `schemaVersion` 只在清单结构不兼容时递增。
-- v2 将原来的全局 `startPath`、`healthPath` 改为模块级 `routes`；旧版 `server_urls` 第一、第二项会分别作为 NAS 和云端地址读取，用户保存新设置后完成迁移。
-- 模块 `id` 是持久标识，不跟显示名称变化。
-- 新字段应优先采用可选字段和安全默认值。
-- 删除模块前，应先发布不再展示该模块的 APP 版本。
-- 服务端更新必须兼容至少一个已发布 APP 版本。
+当前能力包括 `web`、`health.scale`、`health.samsung` 和 `notification`。
 
-## 7. 接入验收清单
+## 6. 验收
 
-- [ ] 应用中心能打开模块入口
-- [ ] 登录、退出和 Cookie Path 正确
-- [ ] 所有静态文件和 API 请求保留子路径
-- [ ] Android 返回键先返回网页历史，再回应用中心
-- [ ] 上传、下载、确认对话框正常
-- [ ] 外部链接交给系统应用
-- [ ] 服务不可达时显示本地错误页并能重试
-- [ ] 不声明原生能力时无法调用敏感能力
-- [ ] 每条非空 `probePath` 都返回 HTTP 200
-- [ ] 只部署在 NAS 或云端的模块不会被解析到另一环境
-- [ ] 双路由模块故障切换时不影响其他模块的活动路由
-- [ ] 与健康、股票等已有模块的 Cookie 和路由互不干扰
+- [ ] 首次启动不要求输入服务器地址
+- [ ] 规范入口和每个别名的 `health_path` 返回 200
+- [ ] OIDC/Forward Auth 在 WebView 内往返并回到原模块
+- [ ] Identity 和其他模块不能调用 Health 原生桥接
+- [ ] 公网入口不可达时可切换到 NAS 别名
+- [ ] NAS 不可达时可恢复到规范入口
+- [ ] 外部链接仍交给系统浏览器
+- [ ] 清单不包含密钥、密码或私有 Token

@@ -1,39 +1,39 @@
 package com.shadow.app.core;
 
 import org.json.JSONException;
-import org.json.JSONObject;
 
-/** One module deployment route on a configured server environment. */
+import java.net.URI;
+
+/** One immutable endpoint projected from a Platform canonical URL or alias. */
 public final class ModuleRoute {
-    public static final String NAS = "nas";
-    public static final String CLOUD = "cloud";
+    public static final String CANONICAL = "canonical";
 
-    public final String server;
-    public final int port;
-    public final String startPath;
-    public final String probePath;
+    public final String key;
+    public final String url;
+    public final String probeUrl;
 
-    private ModuleRoute(JSONObject value) {
-        server = value.optString("server");
-        port = value.optInt("port", 0);
-        startPath = value.optString("startPath", "/");
-        probePath = value.optString("probePath");
+    private ModuleRoute(String key, String url, String probeUrl) {
+        this.key = key;
+        this.url = url;
+        this.probeUrl = probeUrl;
     }
 
-    public static ModuleRoute fromJson(JSONObject value, String moduleId) throws JSONException {
-        ModuleRoute route = new ModuleRoute(value);
-        if (!NAS.equals(route.server) && !CLOUD.equals(route.server)) {
-            throw new JSONException("invalid route server for " + moduleId + ": " + route.server);
+    public static ModuleRoute fromPlatformUrl(String key, String rawUrl, String healthPath,
+                                              String moduleId, boolean canonical)
+            throws JSONException {
+        String normalized = UrlTools.normalizeBase(rawUrl);
+        if (normalized.isEmpty()) {
+            throw new JSONException("invalid Platform URL for " + moduleId + ": " + rawUrl);
         }
-        if (value.has("port") && (route.port < 1 || route.port > 65535)) {
-            throw new JSONException("invalid route port for " + moduleId + ": " + route.port);
+        if (canonical && !normalized.startsWith("https://")) {
+            throw new JSONException("canonical URL must use HTTPS: " + moduleId);
         }
-        if (!route.startPath.startsWith("/")) {
-            throw new JSONException("route startPath must be absolute: " + moduleId);
+        if (URI.create(normalized).getUserInfo() != null) {
+            throw new JSONException("Platform URLs cannot embed credentials: " + moduleId);
         }
-        if (!route.probePath.isEmpty() && !route.probePath.startsWith("/")) {
-            throw new JSONException("route probePath must be absolute: " + moduleId);
-        }
-        return route;
+        String entryUrl = UrlTools.join(normalized, "/");
+        String probe = healthPath == null || healthPath.isEmpty()
+                ? "" : UrlTools.join(normalized, healthPath);
+        return new ModuleRoute(key, entryUrl, probe);
     }
 }
