@@ -14,7 +14,7 @@
         @HEALTH_ALIAS_URL@
       ],
       "auth": {
-        "mode": "forward-auth",
+        "mode": "oidc",
         "groups": ["health-users"]
       },
       "health_path": "/healthz",
