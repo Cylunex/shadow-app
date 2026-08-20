@@ -16,7 +16,7 @@
         "groups": ["garden-admins"]
       },
       "health_path": "/healthz",
-      "icon": "leaf",
+      "icon": "garden",
       "color": "#84cc16",
       "enabled": true,
       "capabilities": ["web"]
@@ -32,7 +32,7 @@
         "groups": ["health-users"]
       },
       "health_path": "/healthz",
-      "icon": "heart",
+      "icon": "health",
       "color": "#14b8a6",
       "enabled": true,
       "capabilities": ["web", "health.scale", "health.samsung", "notification"]
@@ -48,7 +48,7 @@
         "groups": ["stock-users"]
       },
       "health_path": "/healthz",
-      "icon": "chart",
+      "icon": "stock",
       "color": "#f59e0b",
       "enabled": true,
       "capabilities": ["web"]
@@ -64,7 +64,7 @@
         "groups": ["travel-users"]
       },
       "health_path": "/healthz",
-      "icon": "map",
+      "icon": "travel",
       "color": "#38bdf8",
       "enabled": true,
       "capabilities": ["web", "map", "media"]
@@ -96,7 +96,7 @@
         "groups": ["shadow-users"]
       },
       "health_path": "/healthz",
-      "icon": "inbox",
+      "icon": "platform",
       "color": "#a78bfa",
       "enabled": @NOTIFICATIONS_ENABLED@,
       "capabilities": ["web", "inbox", "operations"]

@@ -40,7 +40,7 @@ Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用�
 | `auth.groups` | Platform | 应用最小准入组 |
 | `health_path` | Platform | 无需登录、返回 200 的探活路径 |
 | `name`、`description` | Mobile | 应用中心文案 |
-| `icon`、`color` | Mobile | 移动端展示 |
+| `icon`、`color` | Mobile | 移动端展示；图标使用 `app/assets/icons/` 中的项目 ID |
 | `enabled` | Mobile | 是否展示 |
 | `capabilities` | Mobile | 原生能力允许列表 |
 

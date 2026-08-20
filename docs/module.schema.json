@@ -74,7 +74,10 @@
           ]
         },
         "icon": {
-          "enum": ["heart", "chart", "leaf", "map", "ledger", "inbox", "web"]
+          "enum": [
+            "app", "archive", "garden", "health", "ledger",
+            "platform", "stock", "travel", "verse", "wingman"
+          ]
         },
         "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
         "enabled": { "type": "boolean" },

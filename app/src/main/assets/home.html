@@ -66,9 +66,9 @@
       background:url('brand/icon-master.png') center/cover; opacity:.5; filter:saturate(.78); }
     .card-body { padding:14px 15px 15px; }
     .card-top { display:flex; align-items:center; justify-content:space-between; }
-    .module-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:9px;
-      color:var(--ice); border:1px solid rgba(24,184,200,.4); background:rgba(24,184,200,.1); }
-    .module-icon svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; }
+    .module-icon { width:44px; height:44px; display:block; overflow:hidden; border-radius:13px;
+      box-shadow:0 0 18px rgba(24,184,200,.2); }
+    .module-icon img { display:block; width:100%; height:100%; object-fit:cover; }
     .arrow { color:#61717d; font-size:18px; }
     .name { margin-top:13px; font-family:"Songti SC","STSong",serif; font-size:19px;
       font-weight:650; letter-spacing:.08em; }
@@ -78,8 +78,10 @@
       color:#72818b; font-size:9px; letter-spacing:.04em; }
     .empty { grid-column:1/-1; border:1px dashed #293b49; border-radius:16px;
       color:#7e8d97; padding:28px; text-align:center; }
-    .config { width:100%; margin-top:16px; padding:12px; border:1px solid var(--line);
-      border-radius:13px; color:#9fb0ba; background:rgba(20,32,49,.44); font-size:12px; letter-spacing:.12em; }
+    .config { width:100%; margin-top:16px; padding:10px 12px; border:1px solid var(--line);
+      border-radius:13px; color:#9fb0ba; background:rgba(20,32,49,.44); font-size:12px;
+      letter-spacing:.12em; display:flex; align-items:center; justify-content:center; gap:9px; }
+    .config img { width:24px; height:24px; border-radius:7px; }
     footer { display:flex; justify-content:space-between; margin:20px 3px 0; color:#475661;
       font-size:9px; letter-spacing:.11em; }
     @media (max-width:390px) {
@@ -99,21 +101,14 @@
   <section class="hero"><img src="brand/banner.png" alt="影 Shadow · 掌控数据，洞察未来，守护自己"></section>
   <div class="section-head"><h1>我的空间</h1><span id="summary">正在载入</span></div>
   <section id="modules" class="grid"></section>
-  <button class="config" onclick="openSettings()">平台与设备 · PLATFORM</button>
+  <button class="config" onclick="openSettings()"><img src="icons/platform.png" alt="">平台与设备 · PLATFORM</button>
   <footer><span>SHADOW APP</span><span>掌控数据 · 洞察未来 · 守护自己</span></footer>
 </main>
 <script>
   const labels = { web:'WEB', 'health.scale':'体脂秤', 'health.samsung':'三星健康',
     notification:'提醒', map:'地图', media:'媒体', finance:'财务', inbox:'收件箱', operations:'运维' };
-  const icons = {
-    heart:`<svg viewBox="0 0 24 24"><path d="M20.8 5.8c-2.2-2.2-5.7-1.9-7.7.3L12 7.3l-1.1-1.2C8.9 3.9 5.4 3.6 3.2 5.8c-2.4 2.4-2.1 6.4.3 8.7L12 22l8.5-7.5c2.4-2.3 2.7-6.3.3-8.7Z"/><path d="M3.9 12h4l1.5-3.1 2.8 7 2.1-4H20"/></svg>`,
-    chart:`<svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M7 15l3-4 3 2 5-7"/><path d="M15 6h3v3"/></svg>`,
-    leaf:`<svg viewBox="0 0 24 24"><path d="M20 4C11 4 5 8 5 15c0 3 2 5 5 5 7 0 10-7 10-16Z"/><path d="M4 21c3-6 7-9 13-12"/></svg>`,
-    map:`<svg viewBox="0 0 24 24"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Z"/><path d="M9 3v15M15 6v15"/></svg>`,
-    ledger:`<svg viewBox="0 0 24 24"><path d="M5 3h14v18H5V3Z"/><path d="M8 3v18M11 8h5M11 12h5M11 16h3"/></svg>`,
-    inbox:`<svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Z"/><path d="M4 14h5l2 2h2l2-2h5"/></svg>`,
-    web:`<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>`
-  };
+  const iconNames = new Set(['app','archive','garden','health','ledger','platform','stock','travel','verse','wingman']);
+  function iconName(value) { return iconNames.has(value) ? value : 'app'; }
   function visual(id) {
     if (id === 'stock') return `<div class="visual"><svg viewBox="0 0 180 90" preserveAspectRatio="none">
       <defs><linearGradient id="chartGlow" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#18b8c8" stop-opacity=".3"/><stop offset="1" stop-color="#18b8c8" stop-opacity="0"/></linearGradient></defs>
@@ -144,7 +139,7 @@
     const root=document.getElementById('modules');
     if (!modules.length) { root.innerHTML='<div class="empty">尚未接入应用</div>'; return; }
     root.innerHTML=modules.map(m=>`<button class="card" onclick="openModule('${m.id}')">
-      ${visual(m.id)}<div class="card-body"><div class="card-top"><span class="module-icon">${icons[m.icon]||icons.web}</span><span class="arrow">↗</span></div>
+      ${visual(m.id)}<div class="card-body"><div class="card-top"><span class="module-icon"><img src="icons/${iconName(m.icon)}.png" alt=""></span><span class="arrow">↗</span></div>
       <div class="name">${escapeHtml(m.name)}</div><div class="desc">${escapeHtml(m.description)}</div>
       <div class="tags"><span class="tag">PLATFORM</span>${(m.capabilities||[]).map(c=>`<span class="tag">${labels[c]||escapeHtml(c)}</span>`).join('')}</div></div></button>`).join('');
   }

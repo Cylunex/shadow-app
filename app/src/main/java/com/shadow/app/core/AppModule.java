@@ -25,7 +25,7 @@ public final class AppModule {
         name = value.optString("name", id);
         description = value.optString("description");
         color = value.optString("color", "#64748b");
-        icon = value.optString("icon", "web");
+        icon = value.optString("icon", "app");
         enabled = value.optBoolean("enabled", true);
         capabilities = value.optJSONArray("capabilities") == null
                 ? new JSONArray() : value.optJSONArray("capabilities");

@@ -45,8 +45,8 @@ android {
         applicationId = "com.shadow.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.3.0"
+        versionCode = 8
+        versionName = "0.3.1"
 
         buildConfigField("boolean", "SAMSUNG_HEALTH_AVAILABLE", samsungHealthEnabled.toString())
     }
@@ -267,9 +267,20 @@ $domains
 
 val validateModules by tasks.registering {
     val catalog = generatedPlatformAssets.map { it.file("modules.json") }
+    val iconDirectory = file("src/main/assets/icons")
+    val supportedIcons = setOf(
+        "app", "archive", "garden", "health", "ledger",
+        "platform", "stock", "travel", "verse", "wingman"
+    )
     dependsOn(generatePlatformCatalog)
     inputs.file(catalog)
+    inputs.dir(iconDirectory)
     doLast {
+        supportedIcons.forEach { icon ->
+            require(iconDirectory.resolve("$icon.png").isFile) {
+                "Missing bundled project icon: $icon.png"
+            }
+        }
         val catalogFile = catalog.get().asFile
         @Suppress("UNCHECKED_CAST")
         val root = JsonSlurper().parseText(catalogFile.readText()) as Map<String, Any?>
@@ -341,6 +352,10 @@ val validateModules by tasks.registering {
             val color = module["color"] as? String ?: error("modules[$index].color is required")
             require(color.matches(Regex("#[0-9a-fA-F]{6}"))) {
                 "modules.json: invalid color for $id"
+            }
+            val icon = module["icon"] as? String ?: error("modules[$index].icon is required")
+            require(icon in supportedIcons) {
+                "modules.json: unsupported icon for $id: $icon"
             }
         }
     }
