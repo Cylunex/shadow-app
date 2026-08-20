@@ -89,7 +89,12 @@ OIDC/Forward Auth 后返回原模块。Identity 页面不能获得健康桥接�
 4. 在用户主动启用时请求 Android 权限；
 5. 后台写入使用独立 Service Bearer，并保证幂等与审计。
 
-当前能力包括 `web`、`health.scale`、`health.samsung` 和 `notification`。
+当前能力包括 `web`、`health.scale`、`health.samsung`、`notification`、`map`、`media`、
+`finance`、`inbox` 和 `operations`。其中能力字段只用于展示和原生桥授权，不等于业务 API
+权限。
+
+没有可用备用入口的模块可以把 `aliasUrl` 留空。尚未部署但已完成壳接入的模块应使用
+`enabled=false`，这样清单仍会经过构建校验，但不会显示在应用中心。
 
 ## 6. 验收
 

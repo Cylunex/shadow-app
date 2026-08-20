@@ -427,16 +427,20 @@ public class MainActivity extends Activity {
     }
 
     private String moduleIdForUrl(String url) {
+        String matchedModuleId = null;
+        int matchedLength = -1;
         for (AppModule module : registry.all()) {
             for (String candidate : ServerConfig.moduleUrls(registry, module.id)) {
                 String moduleUrl = UrlTools.bare(candidate);
                 if (!moduleUrl.isEmpty()
-                        && (url.equals(moduleUrl) || url.startsWith(moduleUrl))) {
-                    return module.id;
+                        && UrlTools.isWithinBase(url, moduleUrl)
+                        && moduleUrl.length() > matchedLength) {
+                    matchedModuleId = module.id;
+                    matchedLength = moduleUrl.length();
                 }
             }
         }
-        return null;
+        return matchedModuleId;
     }
 
     private void showHealthOffline() {

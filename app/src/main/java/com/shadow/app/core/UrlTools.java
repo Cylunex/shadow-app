@@ -87,6 +87,26 @@ public final class UrlTools {
         }
     }
 
+    /** True when a URL belongs to an exact module base path on the same origin. */
+    public static boolean isWithinBase(String url, String base) {
+        try {
+            URI target = URI.create(url);
+            URI module = URI.create(base);
+            if (!sameOrigin(url, base)) {
+                return false;
+            }
+            String targetPath = normalizedPath(target.getRawPath());
+            String basePath = normalizedPath(module.getRawPath());
+            if ("/".equals(basePath)) {
+                return true;
+            }
+            String withoutTrailingSlash = basePath.substring(0, basePath.length() - 1);
+            return targetPath.equals(withoutTrailingSlash) || targetPath.startsWith(basePath);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
     private static boolean equalsIgnoreCase(String a, String b) {
         return a != null && b != null && a.equalsIgnoreCase(b);
     }
@@ -96,5 +116,10 @@ public final class UrlTools {
             return uri.getPort();
         }
         return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+    }
+
+    private static String normalizedPath(String path) {
+        String value = path == null || path.isEmpty() ? "/" : path;
+        return value.endsWith("/") ? value : value + "/";
     }
 }

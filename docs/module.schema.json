@@ -73,14 +73,19 @@
             { "type": "null" }
           ]
         },
-        "icon": { "enum": ["heart", "chart", "web"] },
+        "icon": {
+          "enum": ["heart", "chart", "leaf", "map", "ledger", "inbox", "web"]
+        },
         "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
         "enabled": { "type": "boolean" },
         "capabilities": {
           "type": "array",
           "uniqueItems": true,
           "items": {
-            "enum": ["web", "health.scale", "health.samsung", "notification"]
+            "enum": [
+              "web", "health.scale", "health.samsung", "notification",
+              "map", "media", "finance", "inbox", "operations"
+            ]
           }
         }
       }

@@ -3,10 +3,14 @@
 Shadow App 是 Shadow 系列服务的独立 Android 壳。它接入 Shadow Platform Catalog 与
 Identity，在同一个安全 WebView 容器里打开各个独立部署的 Web 应用。
 
-首版内置：
+当前内置：
 
+- 花园：内容创作与个人数字花园
 - 健康：`/shealth/`
 - 股票：`/stock/`
+- 足迹：`/travel/`
+- 账簿：消费、金额事实与计划
+- 收件箱：Platform Notifications 部署后由本地配置启用
 
 Android 包名为 `com.shadow.app`，应用显示名为 `Shadow`，最低支持 Android 10（API 29）。
 
@@ -44,8 +48,8 @@ Android 包名为 `com.shadow.app`，应用显示名为 `Shadow`，最低支持 
    cp config/platform.local.properties.example config/platform.local.properties
    ```
 
-   把示例 Identity、健康、股票和 NAS URL 替换为当前环境地址。也可以使用模板中列出的
-   `SHADOW_*` 环境变量，供 CI 或其他构建机注入。
+   把示例 Identity、各应用和 NAS URL 替换为当前环境地址。无备用入口时对应 alias 可留空；
+   也可以使用模板中列出的 `SHADOW_*` 环境变量，供 CI 或其他构建机注入。
 
 构建：
 
@@ -110,8 +114,9 @@ Catalog 模板；真实部署地址只保存在被 Git 忽略的
 - 无需登录的健康检查路径；
 - 移动端展示与原生能力允许列表。
 
-壳默认打开规范入口，并按模块记忆可用别名；入口失败时只切换当前模块。设置页仅保留健康
-同步 Token、体脂秤、三星健康和提醒，不再出现服务器地址。完整约定见
+壳默认打开规范入口，并按模块记忆可用别名；入口失败时只切换当前模块。共享 Origin 下按
+最长模块路径识别页面，避免根路径应用吞掉 `/travel/` 等子路径。设置页仅保留健康同步
+Token、体脂秤、三星健康和提醒，不再出现服务器地址。完整约定见
 [模块接入规范](docs/module-integration.md)。
 
 ## 目录

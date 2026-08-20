@@ -48,4 +48,16 @@ public class UrlToolsTest {
         assertTrue(UrlTools.sameOrigin("https://example.com/a", "https://example.com:443/b"));
         assertFalse(UrlTools.sameOrigin("https://example.com", "http://example.com"));
     }
+
+    @Test
+    public void moduleBaseMatchingRespectsSubpathBoundaries() {
+        assertTrue(UrlTools.isWithinBase(
+                "https://example.com/travel/maps/1", "https://example.com/travel/"));
+        assertTrue(UrlTools.isWithinBase(
+                "https://example.com/travel", "https://example.com/travel/"));
+        assertFalse(UrlTools.isWithinBase(
+                "https://example.com/travelogue", "https://example.com/travel/"));
+        assertFalse(UrlTools.isWithinBase(
+                "https://other.example.com/travel/", "https://example.com/travel/"));
+    }
 }

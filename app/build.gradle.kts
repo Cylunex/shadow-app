@@ -45,8 +45,8 @@ android {
         applicationId = "com.shadow.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.0"
+        versionCode = 7
+        versionName = "0.3.0"
 
         buildConfigField("boolean", "SAMSUNG_HEALTH_AVAILABLE", samsungHealthEnabled.toString())
     }
@@ -123,14 +123,29 @@ val generatePlatformCatalog by tasks.registering {
             platformLocalConfig.inputStream().use(local::load)
         }
 
-        fun deploymentValue(propertyName: String, environmentName: String): String {
+        fun optionalDeploymentValue(propertyName: String, environmentName: String): String? {
             return System.getenv(environmentName)?.trim()?.takeIf(String::isNotEmpty)
                 ?: local.getProperty(propertyName)?.trim()?.takeIf(String::isNotEmpty)
+        }
+
+        fun deploymentValue(propertyName: String, environmentName: String): String {
+            return optionalDeploymentValue(propertyName, environmentName)
                 ?: throw GradleException(
                     "Missing Platform endpoint '$propertyName'. Copy " +
                             "config/platform.local.properties.example to " +
                             "config/platform.local.properties or set $environmentName."
                 )
+        }
+
+        fun deploymentBoolean(propertyName: String, environmentName: String,
+                              defaultValue: Boolean): Boolean {
+            val raw = optionalDeploymentValue(propertyName, environmentName)
+                ?: return defaultValue
+            return when (raw.lowercase()) {
+                "true" -> true
+                "false" -> false
+                else -> throw GradleException("$propertyName must be true or false")
+            }
         }
 
         fun checkedUri(label: String, value: String, requireHttps: Boolean): URI {
@@ -155,28 +170,65 @@ val generatePlatformCatalog by tasks.registering {
             "HEALTH_CANONICAL_URL" to deploymentValue(
                 "health.canonicalUrl", "SHADOW_HEALTH_CANONICAL_URL"
             ),
-            "HEALTH_ALIAS_URL" to deploymentValue(
-                "health.aliasUrl", "SHADOW_HEALTH_ALIAS_URL"
-            ),
             "STOCK_CANONICAL_URL" to deploymentValue(
                 "stock.canonicalUrl", "SHADOW_STOCK_CANONICAL_URL"
             ),
-            "STOCK_ALIAS_URL" to deploymentValue(
+            "GARDEN_CANONICAL_URL" to deploymentValue(
+                "garden.canonicalUrl", "SHADOW_GARDEN_CANONICAL_URL"
+            ),
+            "TRAVEL_CANONICAL_URL" to deploymentValue(
+                "travel.canonicalUrl", "SHADOW_TRAVEL_CANONICAL_URL"
+            ),
+            "LEDGER_CANONICAL_URL" to deploymentValue(
+                "ledger.canonicalUrl", "SHADOW_LEDGER_CANONICAL_URL"
+            ),
+            "NOTIFICATIONS_CANONICAL_URL" to deploymentValue(
+                "notifications.canonicalUrl", "SHADOW_NOTIFICATIONS_CANONICAL_URL"
+            )
+        )
+        val aliasEndpoints = linkedMapOf(
+            "HEALTH_ALIASES" to listOfNotNull(optionalDeploymentValue(
+                "health.aliasUrl", "SHADOW_HEALTH_ALIAS_URL"
+            )),
+            "STOCK_ALIASES" to listOfNotNull(optionalDeploymentValue(
                 "stock.aliasUrl", "SHADOW_STOCK_ALIAS_URL"
+            )),
+            "GARDEN_ALIASES" to listOfNotNull(optionalDeploymentValue(
+                "garden.aliasUrl", "SHADOW_GARDEN_ALIAS_URL"
+            )),
+            "TRAVEL_ALIASES" to listOfNotNull(optionalDeploymentValue(
+                "travel.aliasUrl", "SHADOW_TRAVEL_ALIAS_URL"
+            )),
+            "LEDGER_ALIASES" to listOfNotNull(optionalDeploymentValue(
+                "ledger.aliasUrl", "SHADOW_LEDGER_ALIAS_URL"
+            )),
+            "NOTIFICATIONS_ALIASES" to listOfNotNull(optionalDeploymentValue(
+                "notifications.aliasUrl", "SHADOW_NOTIFICATIONS_ALIAS_URL"
+            ))
+        )
+        val enabledValues = mapOf(
+            "NOTIFICATIONS_ENABLED" to deploymentBoolean(
+                "notifications.enabled", "SHADOW_NOTIFICATIONS_ENABLED", false
             )
         )
 
         checkedUri("Platform Identity issuer", endpoints.getValue("IDENTITY_ISSUER"), true)
-        checkedUri("health canonical URL", endpoints.getValue("HEALTH_CANONICAL_URL"), true)
-        checkedUri("stock canonical URL", endpoints.getValue("STOCK_CANONICAL_URL"), true)
-        val aliasUris = listOf(
-            checkedUri("health alias URL", endpoints.getValue("HEALTH_ALIAS_URL"), false),
-            checkedUri("stock alias URL", endpoints.getValue("STOCK_ALIAS_URL"), false)
-        )
+        endpoints.filterKeys { it != "IDENTITY_ISSUER" }.forEach { (token, value) ->
+            checkedUri(token.lowercase().replace('_', ' '), value, true)
+        }
+        val aliasUris = aliasEndpoints.flatMap { (token, values) ->
+            values.map { checkedUri(token.lowercase().replace('_', ' '), it, false) }
+        }
 
         var renderedCatalog = platformCatalogTemplate.readText()
         endpoints.forEach { (token, value) ->
             renderedCatalog = renderedCatalog.replace("@$token@", JsonOutput.toJson(value))
+        }
+        aliasEndpoints.forEach { (token, values) ->
+            renderedCatalog = renderedCatalog.replace("@$token@", JsonOutput.toJson(values))
+        }
+        enabledValues.forEach { (token, value) ->
+            renderedCatalog = renderedCatalog.replace("@$token@", value.toString())
         }
         require(!Regex("@[A-Z_]+@").containsMatchIn(renderedCatalog)) {
             "Unresolved token in Platform Catalog template"

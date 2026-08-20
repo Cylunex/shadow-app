@@ -1,10 +1,17 @@
 # Copy this file to platform.local.properties and replace every example value.
 # The local file is ignored by Git. Values may alternatively be supplied through
-# the SHADOW_PLATFORM_IDENTITY_ISSUER, SHADOW_HEALTH_CANONICAL_URL,
-# SHADOW_HEALTH_ALIAS_URL, SHADOW_STOCK_CANONICAL_URL and SHADOW_STOCK_ALIAS_URL
-# environment variables.
+# matching SHADOW_<MODULE>_* environment variables.
 platform.identityIssuer=https://auth.example.com
+garden.canonicalUrl=https://example.com/
+garden.aliasUrl=
 health.canonicalUrl=https://health.example.com/
 health.aliasUrl=http://nas.example.com:8080/health/
 stock.canonicalUrl=https://stock.example.com/
 stock.aliasUrl=http://nas.example.com:8080/stock/
+travel.canonicalUrl=https://example.com/travel/
+travel.aliasUrl=https://travel.example.com/
+ledger.canonicalUrl=https://ledger.example.com/
+ledger.aliasUrl=
+notifications.canonicalUrl=https://notify.example.com/
+notifications.aliasUrl=
+notifications.enabled=false
