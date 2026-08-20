@@ -18,9 +18,9 @@ val samsungSdk = file("libs/samsung-health-data-api-1.1.0.aar")
 val samsungHealthEnabled = samsungSdk.exists()
         && !providers.gradleProperty("withoutSamsung").isPresent
 val releaseKeystore = file(providers.environmentVariable("SHADOW_KEYSTORE_PATH")
-    .orElse("/data/project/.secrets/shadow-app/shadow-release.jks").get())
+    .orElse(rootProject.file("config/shadow-release.keystore").absolutePath).get())
 val releasePasswordFile = file(providers.environmentVariable("SHADOW_KEYSTORE_PASSWORD_FILE")
-    .orElse("/data/project/.secrets/shadow-app/shadow-release.password").get())
+    .orElse(rootProject.file("config/shadow-release.password").absolutePath).get())
 val releaseSigningAvailable = releaseKeystore.isFile && releasePasswordFile.isFile
 val releaseRequested = gradle.startParameter.taskNames.any {
     val taskName = it.substringAfterLast(":")

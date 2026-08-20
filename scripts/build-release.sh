@@ -2,9 +2,12 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-secrets_host=${SHADOW_SECRETS_HOST:-nas}
-remote_secrets_dir=${SHADOW_REMOTE_SECRETS_DIR:-/data/project/.secrets/shadow-app}
-expected_fingerprint=77E332BC57EE7540026DA37D0BCD74BBB25D438DF356FB28DE278CAD227A14EB
+: "${SHADOW_SECRETS_HOST:?Set SHADOW_SECRETS_HOST from the local operations config}"
+: "${SHADOW_REMOTE_SECRETS_DIR:?Set SHADOW_REMOTE_SECRETS_DIR from the local operations config}"
+: "${SHADOW_SIGNING_CERT_SHA256:?Set SHADOW_SIGNING_CERT_SHA256 from the local operations config}"
+secrets_host=$SHADOW_SECRETS_HOST
+remote_secrets_dir=$SHADOW_REMOTE_SECRETS_DIR
+expected_fingerprint=$SHADOW_SIGNING_CERT_SHA256
 temp_root=${TMPDIR:-/tmp}
 signing_dir=$(mktemp -d "$temp_root/shadow-signing.XXXXXX")
 

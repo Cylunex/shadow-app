@@ -9,8 +9,8 @@ import static org.junit.Assert.assertTrue;
 public class UrlToolsTest {
     @Test
     public void normalizeBaseAddsSchemeAndRemovesTrailingSlash() {
-        assertEquals("http://192.168.1.10:55080",
-                UrlTools.normalizeBase(" 192.168.1.10:55080/// "));
+        assertEquals("http://192.0.2.10:18080",
+                UrlTools.normalizeBase(" 192.0.2.10:18080/// "));
     }
 
     @Test
@@ -27,8 +27,8 @@ public class UrlToolsTest {
 
     @Test
     public void withPortBuildsNasModuleOrigin() {
-        assertEquals("http://192.168.1.100:55080",
-                UrlTools.withPort("http://192.168.1.100", 55080));
+        assertEquals("http://192.0.2.100:18080",
+                UrlTools.withPort("http://192.0.2.100", 18080));
     }
 
     @Test

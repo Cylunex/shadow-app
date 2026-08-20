@@ -14,3 +14,8 @@ config/platform.local.properties
 # Samsung Health Data SDK is proprietary and must be downloaded separately.
 app/libs/*.aar
 !app/libs/README.md
+
+# Real deployment and operations material is maintained outside the repository.
+deploy/
+ops/
+operations/
