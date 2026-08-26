@@ -1,4 +1,4 @@
-# Shadow App 模块接入规范 v3
+# Shadow App 模块接入规范 v4
 
 Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用户输入 NAS 地址、云端
 域名、端口或子目录。应用入口、别名、认证方式和探活路径均由审查过的构建配置声明。
@@ -14,15 +14,17 @@ Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用�
 
 ## 2. 清单结构
 
-可提交的清单模板位于 `config/modules.template.json`，真实入口由不入库的
-`config/platform.local.properties` 提供。Gradle 构建时将二者合成为生成目录中的
-`assets/modules.json`：
+正式清单由 `shadow-platform` 的 `shadow-profile-build` 从 Deployment、Catalog、Profile、
+Instance 与各项目 Plugin 一次编译，输出 `shadow-app-runtime.json`。本地通过被忽略的
+`platform.runtimeFile` 或环境变量 `SHADOW_APP_RUNTIME_FILE` 交给 Gradle：
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "platform": {
     "catalogVersion": 1,
+    "deploymentId": "shadow-production",
+    "buildId": "64 位 SHA-256",
     "identityIssuer": "https://auth.example.com"
   },
   "modules": []
@@ -33,7 +35,9 @@ Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用�
 
 | 字段 | 来源 | 说明 |
 |---|---|---|
-| `id` | Platform | 稳定 `app_id` |
+| `id` | Platform | 稳定 `module_id` |
+| `product_id` | Platform | 跨 DSH、Nexus、App 一致的规范产品身份 |
+| `order` | Platform | Platform 统一展示顺序 |
 | `canonical_url` | Platform | 公网规范入口，必须为 HTTPS |
 | `aliases` | Platform/部署 | NAS 等备用入口；首版允许局域网 HTTP |
 | `auth.mode` | Platform | `oidc`、`forward-auth` 等认证模式 |
@@ -69,12 +73,16 @@ OIDC/Forward Auth 后返回原模块。Identity 页面不能获得健康桥接�
 ## 4. 新应用接入
 
 1. 先在 `shadow-platform/catalog/apps.yml` 登记稳定 `app_id`、规范入口、认证模式、组和
-   `health_path`。
+   `health_path`，并在 Deployment 中声明规范 `product_id`、`module_id` 与移动能力。
 2. 完成 DNS、TLS、OIDC 回调和无需登录的 `/healthz`。
-3. 在 `config/modules.template.json` 添加移动端文案、图标和能力声明，并在本地部署配置或
-   CI 环境变量中提供已审查的生产入口。
+3. 领域展示与入口来自 Plugin Surface 与 Catalog；重新执行 `shadow-profile-build`，不要在
+   App 仓库复制一份领域目录。
 4. 若有 NAS 别名，确保路径、静态资源、重定向和 Cookie Path 均保留内部前缀。
-5. 运行 `./gradlew validateModules`，并分别验证公网和局域网探活。
+5. 令 `SHADOW_APP_RUNTIME_FILE` 指向编译输出，运行 `./gradlew validateModules`，并分别验证
+   公网和局域网探活。
+
+`config/modules.template.json` 和逐模块本地属性只保留为迁移期兼容路径；正式发布必须使用
+schemaVersion 4 编译投影。
 
 不要把真实部署域名、Token、密码、OIDC client secret 或带 user-info 的 URL 写入 Git。
 本地部署配置必须保持在 `.gitignore` 中；构建产物中的 URL 仍应视为公开信息。

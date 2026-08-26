@@ -12,7 +12,7 @@ Shadow App 是 Shadow 系列的 Android 统一入口。它不合并各项目业�
 
 ## 主要功能
 
-- Garden、Health、Stock、Travel、Ledger 应用入口；
+- Garden、Health、Ledger、Foliant、Travel、Archive 应用入口；
 - Platform Notifications 部署后的统一收件箱入口；
 - 统一工具栏、WebView 会话、文件上传下载和外链处理；
 - 模块级规范入口/备用入口切换；
@@ -21,11 +21,12 @@ Shadow App 是 Shadow 系列的 Android 统一入口。它不合并各项目业�
 
 ## 本地开发
 
-需要 JDK 17 和 Android SDK。复制脱敏模板生成本地配置：
+需要 JDK 17 和 Android SDK。正式开发使用 Platform 编译后的 App 投影；旧版逐模块模板仅供
+兼容：
 
 ```bash
-cp config/platform.local.properties.example config/platform.local.properties
-JAVA_HOME=/path/to/jdk17 ./gradlew --no-daemon validateModules testDebugUnitTest
+SHADOW_APP_RUNTIME_FILE=/path/to/shadow-app-runtime.json \
+  JAVA_HOME=/path/to/jdk17 ./gradlew --no-daemon validateModules testDebugUnitTest
 ```
 
 实际域名、端口和签名材料只放在被忽略的本地配置或仓库外运维目录。

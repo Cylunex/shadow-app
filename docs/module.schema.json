@@ -6,13 +6,15 @@
   "required": ["schemaVersion", "platform", "modules"],
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": { "const": 3 },
+    "schemaVersion": { "const": 4 },
     "platform": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["catalogVersion", "identityIssuer"],
+      "required": ["catalogVersion", "deploymentId", "buildId", "identityIssuer"],
       "properties": {
         "catalogVersion": { "const": 1 },
+        "deploymentId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" },
+        "buildId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "identityIssuer": { "$ref": "#/$defs/httpsUrl" }
       }
     },
@@ -36,11 +38,18 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id", "name", "description", "canonical_url", "aliases", "auth", "health_path",
-        "icon", "color", "enabled", "capabilities"
+        "id", "product_id", "name", "description", "canonical_url", "aliases", "auth",
+        "health_path", "icon", "color", "order", "enabled", "capabilities"
       ],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
+        "product_id": { "type": "string", "pattern": "^shadow-[a-z][a-z0-9-]{1,56}$" },
+        "plugin_id": {
+          "anyOf": [
+            { "type": "string", "pattern": "^shadow-[a-z][a-z0-9-]{1,56}$" },
+            { "type": "null" }
+          ]
+        },
         "name": { "type": "string", "minLength": 1, "maxLength": 24 },
         "description": { "type": "string", "maxLength": 80 },
         "canonical_url": { "$ref": "#/$defs/httpsUrl" },
@@ -80,16 +89,12 @@
           ]
         },
         "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "order": { "type": "integer", "minimum": 0, "maximum": 10000 },
         "enabled": { "type": "boolean" },
         "capabilities": {
           "type": "array",
           "uniqueItems": true,
-          "items": {
-            "enum": [
-              "web", "health.scale", "health.samsung", "notification",
-              "map", "media", "finance", "inbox", "operations"
-            ]
-          }
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*$" }
         }
       }
     }

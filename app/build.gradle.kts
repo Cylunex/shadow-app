@@ -163,6 +163,55 @@ val generatePlatformCatalog by tasks.registering {
             return uri
         }
 
+        val compiledRuntimePath = optionalDeploymentValue(
+            "platform.runtimeFile", "SHADOW_APP_RUNTIME_FILE"
+        )
+        if (compiledRuntimePath != null) {
+            val runtimeFile = rootProject.file(compiledRuntimePath)
+            require(runtimeFile.isFile) {
+                "Compiled App runtime does not exist: $compiledRuntimePath"
+            }
+            @Suppress("UNCHECKED_CAST")
+            val runtime = JsonSlurper().parseText(runtimeFile.readText()) as? Map<String, Any?>
+                ?: error("Compiled App runtime must be an object")
+            require((runtime["schemaVersion"] as? Number)?.toInt() == 4) {
+                "Compiled App runtime must use schemaVersion 4"
+            }
+            val catalogOutput = generatedPlatformAssets.get().file("modules.json").asFile
+            catalogOutput.parentFile.mkdirs()
+            catalogOutput.writeText(JsonOutput.prettyPrint(JsonOutput.toJson(runtime)))
+
+            val modules = runtime["modules"] as? List<*> ?: error("Compiled App runtime modules are required")
+            val cleartextHosts = modules.flatMap { raw ->
+                val module = raw as? Map<*, *> ?: return@flatMap emptyList()
+                val aliases = module["aliases"] as? List<*> ?: emptyList<Any?>()
+                aliases.mapNotNull { it as? String }
+            }.map { checkedUri("module alias", it, false) }
+                .filter { it.scheme == "http" }
+                .mapNotNull { it.host }
+                .distinct()
+            val domainConfig = if (cleartextHosts.isEmpty()) "" else {
+                val domains = cleartextHosts.joinToString("\n") {
+                    "        <domain includeSubdomains=\"false\">$it</domain>"
+                }
+                """
+    <domain-config cleartextTrafficPermitted="true">
+$domains
+    </domain-config>"""
+            }
+            val networkSecurityOutput = generatedPlatformRes.get()
+                .file("xml/network_security_config.xml").asFile
+            networkSecurityOutput.parentFile.mkdirs()
+            networkSecurityOutput.writeText(
+                """<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />$domainConfig
+</network-security-config>
+"""
+            )
+            return@doLast
+        }
+
         val endpoints = linkedMapOf(
             "IDENTITY_ISSUER" to deploymentValue(
                 "platform.identityIssuer", "SHADOW_PLATFORM_IDENTITY_ISSUER"
@@ -284,7 +333,8 @@ val validateModules by tasks.registering {
         val catalogFile = catalog.get().asFile
         @Suppress("UNCHECKED_CAST")
         val root = JsonSlurper().parseText(catalogFile.readText()) as Map<String, Any?>
-        require((root["schemaVersion"] as Number).toInt() == 3) {
+        val schemaVersion = (root["schemaVersion"] as Number).toInt()
+        require(schemaVersion == 3 || schemaVersion == 4) {
             "modules.json: unsupported schemaVersion"
         }
         @Suppress("UNCHECKED_CAST")
@@ -292,6 +342,14 @@ val validateModules by tasks.registering {
             ?: error("modules.json: platform must be an object")
         require((platform["catalogVersion"] as Number).toInt() == 1) {
             "modules.json: unsupported Platform Catalog version"
+        }
+        if (schemaVersion == 4) {
+            require((platform["deploymentId"] as? String)?.isNotBlank() == true) {
+                "modules.json: platform.deploymentId is required"
+            }
+            require((platform["buildId"] as? String)?.matches(Regex("[a-f0-9]{64}")) == true) {
+                "modules.json: platform.buildId must be a SHA-256 digest"
+            }
         }
         val identityIssuer = platform["identityIssuer"] as? String
             ?: error("modules.json: platform.identityIssuer is required")
@@ -312,6 +370,16 @@ val validateModules by tasks.registering {
                 "modules.json: invalid id $id"
             }
             require(ids.add(id)) { "modules.json: duplicate id $id" }
+            if (schemaVersion == 4) {
+                val productId = module["product_id"] as? String
+                    ?: error("modules.json: $id.product_id is required")
+                require(productId.matches(Regex("shadow-[a-z][a-z0-9-]{1,56}"))) {
+                    "modules.json: invalid product_id for $id"
+                }
+                require(module["order"] is Number) {
+                    "modules.json: $id.order is required"
+                }
+            }
 
             val canonicalUrl = module["canonical_url"] as? String
                 ?: error("modules.json: $id.canonical_url is required")

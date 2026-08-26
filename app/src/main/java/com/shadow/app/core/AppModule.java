@@ -11,22 +11,26 @@ import java.util.List;
 /** Immutable mobile projection of one Shadow Platform App Catalog entry. */
 public final class AppModule {
     public final String id;
+    public final String productId;
     public final String name;
     public final String description;
     public final String color;
     public final String icon;
     public final String authMode;
     public final boolean enabled;
+    public final int order;
     public final JSONArray capabilities;
     public final List<ModuleRoute> routes;
 
     private AppModule(JSONObject value) throws JSONException {
         id = value.optString("id");
+        productId = value.optString("product_id", "shadow-" + id);
         name = value.optString("name", id);
         description = value.optString("description");
         color = value.optString("color", "#64748b");
         icon = value.optString("icon", "app");
         enabled = value.optBoolean("enabled", true);
+        order = value.optInt("order", 10_000);
         capabilities = value.optJSONArray("capabilities") == null
                 ? new JSONArray() : value.optJSONArray("capabilities");
 
@@ -76,6 +80,7 @@ public final class AppModule {
     public JSONObject toClientJson(String resolvedUrl) throws JSONException {
         return new JSONObject()
                 .put("id", id)
+                .put("productId", productId)
                 .put("name", name)
                 .put("description", description)
                 .put("url", resolvedUrl)
@@ -84,6 +89,7 @@ public final class AppModule {
                 .put("color", color)
                 .put("icon", icon)
                 .put("enabled", enabled)
+                .put("order", order)
                 .put("capabilities", capabilities);
     }
 

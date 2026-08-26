@@ -1,6 +1,10 @@
 # Copy this file to platform.local.properties and replace every example value.
 # The local file is ignored by Git. Values may alternatively be supplied through
 # matching SHADOW_<MODULE>_* environment variables.
+# 推荐：直接使用 shadow-platform 编译生成的 schemaVersion 4 投影。
+# platform.runtimeFile=/absolute/path/to/shadow-app-runtime.json
+# SHADOW_APP_RUNTIME_FILE 可提供同一值。
+# 以下逐模块字段仅作为旧版本地开发兼容入口。
 platform.identityIssuer=https://auth.example.com
 garden.canonicalUrl=https://example.com/
 garden.aliasUrl=
