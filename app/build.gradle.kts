@@ -45,8 +45,8 @@ android {
         applicationId = "com.shadow.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.3.1"
+        versionCode = 9
+        versionName = "0.3.2"
 
         buildConfigField("boolean", "SAMSUNG_HEALTH_AVAILABLE", samsungHealthEnabled.toString())
     }
@@ -216,6 +216,9 @@ $domains
             "IDENTITY_ISSUER" to deploymentValue(
                 "platform.identityIssuer", "SHADOW_PLATFORM_IDENTITY_ISSUER"
             ),
+            "NEXUS_CANONICAL_URL" to deploymentValue(
+                "nexus.canonicalUrl", "SHADOW_NEXUS_CANONICAL_URL"
+            ),
             "HEALTH_CANONICAL_URL" to deploymentValue(
                 "health.canonicalUrl", "SHADOW_HEALTH_CANONICAL_URL"
             ),
@@ -236,6 +239,9 @@ $domains
             )
         )
         val aliasEndpoints = linkedMapOf(
+            "NEXUS_ALIASES" to listOfNotNull(optionalDeploymentValue(
+                "nexus.aliasUrl", "SHADOW_NEXUS_ALIAS_URL"
+            )),
             "HEALTH_ALIASES" to listOfNotNull(optionalDeploymentValue(
                 "health.aliasUrl", "SHADOW_HEALTH_ALIAS_URL"
             )),

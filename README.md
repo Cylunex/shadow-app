@@ -12,7 +12,7 @@ Shadow App 是 Shadow 系列的 Android 统一入口。它不合并各项目业�
 
 ## 主要功能
 
-- Garden、Health、Ledger、Foliant、Travel、Archive 应用入口；
+- Nexus 统一工作台，以及 Garden、Health、Ledger、Foliant、Travel、Archive 应用入口；
 - Platform Notifications 部署后的统一收件箱入口；
 - 统一工具栏、WebView 会话、文件上传下载和外链处理；
 - 模块级规范入口/备用入口切换；

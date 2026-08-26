@@ -6,6 +6,22 @@
   },
   "modules": [
     {
+      "id": "nexus",
+      "name": "Nexus",
+      "description": "统一对话、采集、搜索与审核工作台",
+      "canonical_url": @NEXUS_CANONICAL_URL@,
+      "aliases": @NEXUS_ALIASES@,
+      "auth": {
+        "mode": "forward-auth",
+        "groups": ["shadow-users"]
+      },
+      "health_path": "/healthz",
+      "icon": "app",
+      "color": "#64748b",
+      "enabled": true,
+      "capabilities": ["web", "media"]
+    },
+    {
       "id": "garden",
       "name": "花园",
       "description": "内容创作、发布与个人数字花园",

@@ -6,6 +6,8 @@
 # SHADOW_APP_RUNTIME_FILE 可提供同一值。
 # 以下逐模块字段仅作为旧版本地开发兼容入口。
 platform.identityIssuer=https://auth.example.com
+nexus.canonicalUrl=https://nexus.example.com/
+nexus.aliasUrl=https://nas.example.com/harness/
 garden.canonicalUrl=https://example.com/
 garden.aliasUrl=
 health.canonicalUrl=https://health.example.com/

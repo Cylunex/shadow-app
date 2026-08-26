@@ -9,6 +9,8 @@ Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用�
 - Shadow App 只补充移动端展示和原生能力字段，不代理业务请求。
 - 浏览器页面使用各应用自己的 OIDC/Forward Auth 会话；原生后台同步继续使用项目级 Bearer。
 - Platform Identity 是 WebView 的受信导航目标，但不是业务模块，也不能调用原生桥接。
+- Nexus 是普通受信 Web 模块：统一对话、采集、搜索和审核留在 Nexus，领域完整界面仍打开
+  各自模块，不在 Android 壳中原生重写。
 - 清单随 APK 发布，不在运行时下载未签名的远程目录，避免入口被远程篡改。
 - 真实部署域名和端口只存在于被 Git 忽略的本地属性文件或 CI 环境变量中。
 
