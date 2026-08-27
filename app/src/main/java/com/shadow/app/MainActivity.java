@@ -4,8 +4,10 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
@@ -15,6 +17,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.util.Log;
 import android.view.Gravity;
@@ -54,6 +57,11 @@ import com.shadow.app.health.SamsungSync;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.FileNotFoundException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -84,6 +92,31 @@ public class MainActivity extends Activity {
     private boolean loadingErrorPage;
     private boolean showingHealthOffline;
     private boolean showingHealthSnapshot;
+    private volatile PendingShareCapture pendingShareCapture;
+
+    private static final class PendingShareCapture {
+        final String id;
+        final String sourceType;
+        final String text;
+        final Uri stream;
+        final String filename;
+        final String mimeType;
+        final long sizeBytes;
+        final String sourceApp;
+
+        PendingShareCapture(String id, String sourceType, String text, Uri stream,
+                            String filename, String mimeType, long sizeBytes,
+                            String sourceApp) {
+            this.id = id;
+            this.sourceType = sourceType;
+            this.text = text;
+            this.stream = stream;
+            this.filename = filename;
+            this.mimeType = mimeType;
+            this.sizeBytes = sizeBytes;
+            this.sourceApp = sourceApp;
+        }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -162,6 +195,7 @@ public class MainActivity extends Activity {
         webView.setDownloadListener(this::download);
 
         openHome();
+        acceptShareIntent(getIntent());
         // Native health integrations are optional. Restore them after the shell is visible and
         // never let a vendor-specific failure take down the web container during app startup.
         mainHandler.post(() -> {
@@ -285,6 +319,10 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(
                     WebView view, WebResourceRequest request) {
+                WebResourceResponse shared = interceptSharedCapture(request);
+                if (shared != null) {
+                    return shared;
+                }
                 return HealthOffline.intercept(getApplicationContext(), request);
             }
 
@@ -531,6 +569,114 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    private boolean isNexusBridgeAllowed() {
+        if (!"nexus".equals(currentModuleId) || currentPageUrl == null) {
+            return false;
+        }
+        for (String candidate : ServerConfig.moduleUrls(registry, "nexus")) {
+            String nexusUrl = UrlTools.bare(candidate);
+            if (!nexusUrl.isEmpty() && UrlTools.isWithinBase(currentPageUrl, nexusUrl)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void acceptShareIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_PROCESS_TEXT.equals(action)) {
+            return;
+        }
+        CharSequence sharedText = Intent.ACTION_PROCESS_TEXT.equals(action)
+                ? intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)
+                : intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        Uri stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        ClipData clip = intent.getClipData();
+        if (stream == null && clip != null && clip.getItemCount() > 0) {
+            stream = clip.getItemAt(0).getUri();
+            if (sharedText == null) {
+                sharedText = clip.getItemAt(0).coerceToText(this);
+            }
+        }
+        String text = sharedText == null ? "" : sharedText.toString().trim();
+        if (text.isEmpty() && stream == null) {
+            return;
+        }
+        String mimeType = intent.getType();
+        if ((mimeType == null || mimeType.isEmpty()) && stream != null) {
+            mimeType = getContentResolver().getType(stream);
+        }
+        if (mimeType == null || mimeType.isEmpty()) {
+            mimeType = stream == null ? "text/plain" : "application/octet-stream";
+        }
+        String filename = stream == null ? "" : sharedDisplayName(stream);
+        long size = stream == null ? 0 : sharedSize(stream);
+        String sourceType = stream != null ? "android.share.file"
+                : text.matches("^https?://\\S+$") ? "android.share.url" : "android.share.text";
+        Uri referrer = getReferrer();
+        pendingShareCapture = new PendingShareCapture(
+                UUID.randomUUID().toString(), sourceType, text, stream,
+                filename.isEmpty() ? "shared-file" : filename, mimeType, size,
+                referrer == null ? "" : referrer.toString());
+        mainHandler.post(() -> openModule("nexus"));
+    }
+
+    private String sharedDisplayName(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(
+                uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                String value = cursor.getString(0);
+                return value == null ? "" : value;
+            }
+        } catch (RuntimeException ignored) {
+            // A provider may expose a stream without metadata.
+        }
+        return uri.getLastPathSegment() == null ? "" : uri.getLastPathSegment();
+    }
+
+    private long sharedSize(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(
+                uri, new String[]{OpenableColumns.SIZE}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) {
+                return Math.max(0, cursor.getLong(0));
+            }
+        } catch (RuntimeException ignored) {
+            // Unknown size is allowed; the Nexus upload will enforce its own limit.
+        }
+        return 0;
+    }
+
+    private WebResourceResponse interceptSharedCapture(WebResourceRequest request) {
+        PendingShareCapture capture = pendingShareCapture;
+        if (capture == null || capture.stream == null || !"GET".equals(request.getMethod())
+                || !isNexusBridgeAllowed()
+                || !request.getUrl().getPath().equals("/__shadow_app_capture/" + capture.id)) {
+            return null;
+        }
+        try {
+            InputStream input = getContentResolver().openInputStream(capture.stream);
+            if (input == null) {
+                return null;
+            }
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Cache-Control", "no-store");
+            headers.put("X-Content-Type-Options", "nosniff");
+            return new WebResourceResponse(capture.mimeType, null, 200, "OK", headers, input);
+        } catch (FileNotFoundException | SecurityException ignored) {
+            return null;
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        acceptShareIntent(intent);
+    }
+
     private void showSettings() {
         EditText token = new EditText(this);
         token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
@@ -685,6 +831,40 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void openSettings() {
             mainHandler.post(MainActivity.this::showSettings);
+        }
+
+        @JavascriptInterface
+        public String getPendingCapture() {
+            PendingShareCapture capture = pendingShareCapture;
+            if (!isNexusBridgeAllowed() || capture == null) {
+                return "{}";
+            }
+            try {
+                JSONObject value = new JSONObject()
+                        .put("capture_id", "cap_" + capture.id)
+                        .put("source_type", capture.sourceType)
+                        .put("text", capture.text)
+                        .put("source_app", capture.sourceApp);
+                if (capture.stream != null) {
+                    value.put("file", new JSONObject()
+                            .put("url", "/__shadow_app_capture/" + capture.id)
+                            .put("name", capture.filename)
+                            .put("type", capture.mimeType)
+                            .put("size", capture.sizeBytes));
+                }
+                return value.toString();
+            } catch (JSONException ignored) {
+                return "{}";
+            }
+        }
+
+        @JavascriptInterface
+        public void completePendingCapture(String captureId) {
+            PendingShareCapture capture = pendingShareCapture;
+            if (isNexusBridgeAllowed() && capture != null
+                    && ("cap_" + capture.id).equals(captureId)) {
+                pendingShareCapture = null;
+            }
         }
 
         /** Legacy alias used by the health offline page. */

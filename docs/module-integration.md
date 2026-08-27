@@ -103,6 +103,19 @@ schemaVersion 4 编译投影。
 `finance`、`inbox` 和 `operations`。其中能力字段只用于展示和原生桥授权，不等于业务 API
 权限。
 
+### Nexus 分享采集
+
+Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTION_PROCESS_TEXT`，但不会把
+分享内容直接提交给模型或领域服务。壳仅在当前可信模块为 Nexus 时，通过受限 `ShellBridge`
+暴露一次性待处理描述；文件内容使用随机 capture ID 对应的只读本地 URL 流式提供。Nexus 成功
+读入文字和附件后回执清除，失败时保留以便重试。
+
+- 不接受批量文件或任意本地文件路径；
+- Content URI 不写入会话和 Nexus 持久状态；
+- 只在 Nexus 可信 Origin 与当前模块双重匹配时开放；
+- 只预填 Composer，不自动发送，也不绕过 Asset 上传、DSH 分析和 Proposal Review；
+- 领域事实仍必须由对应服务确认并返回 receipt。
+
 没有可用备用入口的模块可以把 `aliasUrl` 留空。尚未部署但已完成壳接入的模块应使用
 `enabled=false`，这样清单仍会经过构建校验，但不会显示在应用中心。
 
