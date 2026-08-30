@@ -23,6 +23,9 @@ Shadow App 是 Shadow 的 Android 原生运行壳。它默认把 Nexus 作为完
 - Health 体脂秤、三星健康、提醒与离线队列适配；
 - Android 16 与三星设备系统栏适配。
 - Android 系统分享文本、链接和单个文件到 Nexus；只预填当前会话，用户确认后才进入处理流程。
+- Nexus 去敏简报可交给壳显示原生通知，按稳定 brief id 去重并尊重静默时间；
+- Nexus 快捷动作断网时进入 Android Keystore AES-GCM 加密队列，恢复后仍走领域校验、风险策略、
+  幂等和回执链路，成功前不会移除。
 
 ## 本地开发
 

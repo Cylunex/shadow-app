@@ -53,6 +53,7 @@ import com.shadow.app.health.HealthFeature;
 import com.shadow.app.health.HealthOffline;
 import com.shadow.app.health.Reminders;
 import com.shadow.app.health.SamsungSync;
+import com.shadow.app.nexus.NexusNative;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -894,6 +895,28 @@ public class MainActivity extends Activity {
                     && ("cap_" + capture.id).equals(captureId)) {
                 pendingShareCapture = null;
             }
+        }
+
+        @JavascriptInterface
+        public String enqueueOfflineAction(String actionJson) {
+            if (!isNexusBridgeAllowed()) return "";
+            try { return NexusNative.enqueueAction(MainActivity.this, actionJson); }
+            catch (RuntimeException error) { return ""; }
+        }
+
+        @JavascriptInterface
+        public String getOfflineActions() {
+            return isNexusBridgeAllowed() ? NexusNative.actionsJson(MainActivity.this) : "[]";
+        }
+
+        @JavascriptInterface
+        public void completeOfflineAction(String actionId) {
+            if (isNexusBridgeAllowed()) NexusNative.completeAction(MainActivity.this, actionId);
+        }
+
+        @JavascriptInterface
+        public void showBriefNotification(String briefJson) {
+            if (isNexusBridgeAllowed()) NexusNative.showBrief(MainActivity.this, briefJson);
         }
 
         /** Legacy alias used by the health offline page. */

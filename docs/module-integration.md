@@ -131,6 +131,16 @@ Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTIO
 同 capability、operation、risk 的 Capture Surface 匹配。Nexus 只生成经过校验的 Draft，最终
 提交仍调用领域已有 Review 协议。因此“入口上浮”，业务校验、幂等、回执和事实所有权不迁移。
 
+同一受限桥还提供三组 Nexus 专用能力：
+
+- `showBriefNotification(briefJson)`：显示去敏简报，按稳定 id 原生去重；
+- `enqueueOfflineAction(actionJson)`：将有界快捷动作写入 Android Keystore AES-GCM 加密队列；
+- `getOfflineActions()` / `completeOfflineAction(id)`：恢复网络后由 Nexus 重放，只有领域成功响应
+  才确认移除。
+
+离线队列不接受任意 URL、脚本或凭据，只保存 `domain + actionId + fields`，不能绕过 Nexus Host
+的风险分类与领域写入协议。
+
 没有可用备用入口的模块可以把 `aliasUrl` 留空。尚未部署但已完成壳接入的模块应使用
 `enabled=false`，这样清单仍会经过构建校验，但不会显示在应用中心。
 
@@ -143,6 +153,8 @@ Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTIO
 - [ ] 启动和领域返回进入 `platform.homeModuleId`，Nexus 不显示重复原生工具栏
 - [ ] Quick Action 与 Capture 契约不一致时 Platform 构建失败
 - [ ] L0-L2 动作自动执行并保留回执，L3 进入复核，L4 不执行
+- [ ] Nexus 简报不包含敏感 Entity 值，通知按 brief id 去重
+- [ ] 离线 Quick Action 加密排队，领域成功响应前不会出队
 - [ ] 公网入口不可达时可切换到 NAS 别名
 - [ ] NAS 不可达时可恢复到规范入口
 - [ ] 外部链接仍交给系统浏览器
