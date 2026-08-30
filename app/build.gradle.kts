@@ -45,8 +45,8 @@ android {
         applicationId = "com.shadow.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.4.0"
+        versionCode = 11
+        versionName = "0.5.0"
 
         buildConfigField("boolean", "SAMSUNG_HEALTH_AVAILABLE", samsungHealthEnabled.toString())
     }
@@ -174,8 +174,8 @@ val generatePlatformCatalog by tasks.registering {
             @Suppress("UNCHECKED_CAST")
             val runtime = JsonSlurper().parseText(runtimeFile.readText()) as? Map<String, Any?>
                 ?: error("Compiled App runtime must be an object")
-            require((runtime["schemaVersion"] as? Number)?.toInt() == 4) {
-                "Compiled App runtime must use schemaVersion 4"
+            require((runtime["schemaVersion"] as? Number)?.toInt() in setOf(4, 5)) {
+                "Compiled App runtime must use schemaVersion 4 or 5"
             }
             val catalogOutput = generatedPlatformAssets.get().file("modules.json").asFile
             catalogOutput.parentFile.mkdirs()
@@ -340,7 +340,7 @@ val validateModules by tasks.registering {
         @Suppress("UNCHECKED_CAST")
         val root = JsonSlurper().parseText(catalogFile.readText()) as Map<String, Any?>
         val schemaVersion = (root["schemaVersion"] as Number).toInt()
-        require(schemaVersion == 3 || schemaVersion == 4) {
+        require(schemaVersion in setOf(3, 4, 5)) {
             "modules.json: unsupported schemaVersion"
         }
         @Suppress("UNCHECKED_CAST")
@@ -349,7 +349,7 @@ val validateModules by tasks.registering {
         require((platform["catalogVersion"] as Number).toInt() == 1) {
             "modules.json: unsupported Platform Catalog version"
         }
-        if (schemaVersion == 4) {
+        if (schemaVersion >= 4) {
             require((platform["deploymentId"] as? String)?.isNotBlank() == true) {
                 "modules.json: platform.deploymentId is required"
             }
@@ -366,6 +366,7 @@ val validateModules by tasks.registering {
         val modules = root["modules"] as? List<*>
             ?: error("modules.json: modules must be an array")
         val ids = mutableSetOf<String>()
+        val enabledIds = mutableSetOf<String>()
         val catalogUrls = mutableSetOf<String>()
         modules.forEachIndexed { index, raw ->
             @Suppress("UNCHECKED_CAST")
@@ -376,7 +377,8 @@ val validateModules by tasks.registering {
                 "modules.json: invalid id $id"
             }
             require(ids.add(id)) { "modules.json: duplicate id $id" }
-            if (schemaVersion == 4) {
+            if ((module["enabled"] as? Boolean) == true) enabledIds.add(id)
+            if (schemaVersion >= 4) {
                 val productId = module["product_id"] as? String
                     ?: error("modules.json: $id.product_id is required")
                 require(productId.matches(Regex("shadow-[a-z][a-z0-9-]{1,56}"))) {
@@ -430,6 +432,13 @@ val validateModules by tasks.registering {
             val icon = module["icon"] as? String ?: error("modules[$index].icon is required")
             require(icon in supportedIcons) {
                 "modules.json: unsupported icon for $id: $icon"
+            }
+        }
+        if (schemaVersion >= 5) {
+            val homeModuleId = platform["homeModuleId"] as? String
+                ?: error("modules.json: platform.homeModuleId is required")
+            require(homeModuleId in enabledIds) {
+                "modules.json: platform.homeModuleId must reference an enabled module"
             }
         }
     }

@@ -21,13 +21,16 @@ public final class ModuleRegistry {
     private final String identityIssuer;
     private final String deploymentId;
     private final String buildId;
+    private final String homeModuleId;
     private final List<AppModule> modules;
 
     private ModuleRegistry(String identityIssuer, String deploymentId, String buildId,
+                           String homeModuleId,
                            List<AppModule> modules) {
         this.identityIssuer = identityIssuer;
         this.deploymentId = deploymentId;
         this.buildId = buildId;
+        this.homeModuleId = homeModuleId;
         this.modules = modules;
     }
 
@@ -35,7 +38,7 @@ public final class ModuleRegistry {
         try (InputStream input = context.getAssets().open("modules.json")) {
             JSONObject root = new JSONObject(readAll(input));
             int schemaVersion = root.optInt("schemaVersion");
-            if (schemaVersion != 3 && schemaVersion != 4) {
+            if (schemaVersion != 3 && schemaVersion != 4 && schemaVersion != 5) {
                 throw new JSONException("unsupported module schema");
             }
             JSONObject platform = root.getJSONObject("platform");
@@ -51,7 +54,7 @@ public final class ModuleRegistry {
             }
             String deploymentId = platform.optString("deploymentId", "legacy-local");
             String buildId = platform.optString("buildId", "legacy-local");
-            if (schemaVersion == 4) {
+            if (schemaVersion >= 4) {
                 if (!deploymentId.matches("[a-z][a-z0-9-]{1,63}")) {
                     throw new JSONException("invalid Platform deploymentId");
                 }
@@ -63,7 +66,7 @@ public final class ModuleRegistry {
             List<AppModule> result = new ArrayList<>();
             for (int i = 0; i < values.length(); i++) {
                 AppModule module = AppModule.fromJson(values.getJSONObject(i));
-                if (schemaVersion == 4 && !module.productId.matches(
+                if (schemaVersion >= 4 && !module.productId.matches(
                         "shadow-[a-z][a-z0-9-]{1,56}")) {
                     throw new JSONException("invalid product id: " + module.productId);
                 }
@@ -73,7 +76,13 @@ public final class ModuleRegistry {
                 result.add(module);
             }
             result.sort(Comparator.comparingInt(module -> module.order));
-            return new ModuleRegistry(issuer, deploymentId, buildId,
+            String homeModuleId = schemaVersion >= 5
+                    ? platform.getString("homeModuleId") : "nexus";
+            AppModule home = find(result, homeModuleId);
+            if (schemaVersion >= 5 && (home == null || !home.enabled)) {
+                throw new JSONException("Platform home module must be enabled: " + homeModuleId);
+            }
+            return new ModuleRegistry(issuer, deploymentId, buildId, homeModuleId,
                     Collections.unmodifiableList(result));
         } catch (IOException | JSONException e) {
             throw new IllegalStateException("Cannot load modules.json", e);
@@ -102,6 +111,10 @@ public final class ModuleRegistry {
 
     public String buildId() {
         return buildId;
+    }
+
+    public String homeModuleId() {
+        return homeModuleId;
     }
 
     public String clientJson(Context context) {

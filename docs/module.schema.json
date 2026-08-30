@@ -6,16 +6,17 @@
   "required": ["schemaVersion", "platform", "modules"],
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": { "const": 4 },
+    "schemaVersion": { "const": 5 },
     "platform": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["catalogVersion", "deploymentId", "buildId", "identityIssuer"],
+      "required": ["catalogVersion", "deploymentId", "buildId", "identityIssuer", "homeModuleId"],
       "properties": {
         "catalogVersion": { "const": 1 },
         "deploymentId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" },
         "buildId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "identityIssuer": { "$ref": "#/$defs/httpsUrl" }
+        "identityIssuer": { "$ref": "#/$defs/httpsUrl" },
+        "homeModuleId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" }
       }
     },
     "modules": {

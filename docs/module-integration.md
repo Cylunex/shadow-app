@@ -1,4 +1,4 @@
-# Shadow App 模块接入规范 v4
+# Shadow App 模块接入规范 v5
 
 Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用户输入 NAS 地址、云端
 域名、端口或子目录。应用入口、别名、认证方式和探活路径均由审查过的构建配置声明。
@@ -6,11 +6,11 @@ Shadow App 使用 Shadow Platform App Catalog 的移动端投影，不再让用�
 ## 1. 边界
 
 - Platform Catalog 是应用身份、规范入口、认证模式和健康检查的来源。
-- Shadow App 只补充移动端展示和原生能力字段，不代理业务请求。
+- Shadow App 只补充移动端展示、首页选择和原生能力字段，不代理业务请求。
 - 浏览器页面使用各应用自己的 OIDC/Forward Auth 会话；原生后台同步继续使用项目级 Bearer。
 - Platform Identity 是 WebView 的受信导航目标，但不是业务模块，也不能调用原生桥接。
-- Nexus 是普通受信 Web 模块：统一对话、采集、搜索和审核留在 Nexus，领域完整界面仍打开
-  各自模块，不在 Android 壳中原生重写。
+- Nexus 是 App 的默认产品界面：统一数据面板、对话、采集、快捷操作、搜索和复核留在 Nexus；
+  领域完整界面仍打开各自模块，不在 Android 壳或 Nexus 中复制业务规则。
 - 清单随 APK 发布，不在运行时下载未签名的远程目录，避免入口被远程篡改。
 - 真实部署域名和端口只存在于被 Git 忽略的本地属性文件或 CI 环境变量中。
 
@@ -22,12 +22,13 @@ Instance 与各项目 Plugin 一次编译，输出 `shadow-app-runtime.json`。�
 
 ```json
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "platform": {
     "catalogVersion": 1,
     "deploymentId": "shadow-production",
     "buildId": "64 位 SHA-256",
-    "identityIssuer": "https://auth.example.com"
+    "identityIssuer": "https://auth.example.com",
+    "homeModuleId": "nexus"
   },
   "modules": []
 }
@@ -49,6 +50,10 @@ Instance 与各项目 Plugin 一次编译，输出 `shadow-app-runtime.json`。�
 | `icon`、`color` | Mobile | 移动端展示；图标使用 `app/assets/icons/` 中的项目 ID |
 | `enabled` | Mobile | 是否展示 |
 | `capabilities` | Mobile | 原生能力允许列表 |
+
+`platform.homeModuleId` 必须引用一个启用的 App 投影。正常部署设为 `nexus`；App 启动、品牌按钮
+和普通领域返回路径都回到这个模块。应用中心不再是启动首页，但可由 Nexus 的设备设置入口或
+`ShellBridge.openAppCenter()` 打开，便于诊断单个领域入口。
 
 `health_path` 相对每个入口解析。例如规范入口 `https://health.example.com/` 与别名
 `http://nas.example.com/shealth/` 共用 `/healthz`，得到：
@@ -84,7 +89,7 @@ OIDC/Forward Auth 后返回原模块。Identity 页面不能获得健康桥接�
    公网和局域网探活。
 
 `config/modules.template.json` 和逐模块本地属性只保留为迁移期兼容路径；正式发布必须使用
-schemaVersion 4 编译投影。
+schemaVersion 5 编译投影。
 
 不要把真实部署域名、Token、密码、OIDC client secret 或带 user-info 的 URL 写入 Git。
 本地部署配置必须保持在 `.gitignore` 中；构建产物中的 URL 仍应视为公开信息。
@@ -116,6 +121,16 @@ Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTIO
 - 只预填 Composer，不自动发送，也不绕过 Asset 上传、DSH 分析和 Proposal Review；
 - 领域事实仍必须由对应服务确认并返回 receipt。
 
+### Nexus 深度融合
+
+可信 Nexus Origin 加载完成后，App 隐藏重复的原生工具栏，让 Nexus 侧栏和工作区成为完整产品
+导航。进入 Health 等领域页面时工具栏恢复；从领域返回则回到 `homeModuleId`。Nexus 可以通过
+受限桥打开设备设置，但不能借此读取 Token 或直接调用领域写接口。
+
+常用动作由领域 `contracts/surfaces.yaml` 声明为 `quick-action`，Platform 编译并验证它与一个
+同 capability、operation、risk 的 Capture Surface 匹配。Nexus 只生成经过校验的 Draft，最终
+提交仍调用领域已有 Review 协议。因此“入口上浮”，业务校验、幂等、回执和事实所有权不迁移。
+
 没有可用备用入口的模块可以把 `aliasUrl` 留空。尚未部署但已完成壳接入的模块应使用
 `enabled=false`，这样清单仍会经过构建校验，但不会显示在应用中心。
 
@@ -125,6 +140,9 @@ Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTIO
 - [ ] 规范入口和每个别名的 `health_path` 返回 200
 - [ ] OIDC/Forward Auth 在 WebView 内往返并回到原模块
 - [ ] Identity 和其他模块不能调用 Health 原生桥接
+- [ ] 启动和领域返回进入 `platform.homeModuleId`，Nexus 不显示重复原生工具栏
+- [ ] Quick Action 与 Capture 契约不一致时 Platform 构建失败
+- [ ] L0-L2 动作自动执行并保留回执，L3 进入复核，L4 不执行
 - [ ] 公网入口不可达时可切换到 NAS 别名
 - [ ] NAS 不可达时可恢复到规范入口
 - [ ] 外部链接仍交给系统浏览器

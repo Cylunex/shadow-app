@@ -80,6 +80,7 @@ public class MainActivity extends Activity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Runnable healthProbe = this::probeHealth;
     private WebView webView;
+    private View shellToolbar;
     private TextView titleView;
     private SharedPreferences prefs;
     private ModuleRegistry registry;
@@ -147,7 +148,8 @@ public class MainActivity extends Activity {
         LinearLayout screen = new LinearLayout(this);
         screen.setOrientation(LinearLayout.VERTICAL);
         screen.setBackgroundColor(BACKGROUND);
-        screen.addView(createToolbar());
+        shellToolbar = createToolbar();
+        screen.addView(shellToolbar);
 
         webView = new WebView(this);
         webView.setBackgroundColor(BACKGROUND);
@@ -351,6 +353,7 @@ public class MainActivity extends Activity {
                 if (HOME_URL.equals(url)) {
                     currentModuleId = null;
                     titleView.setText("应用中心");
+                    setShellChromeVisible(true);
                 } else if (url != null && url.startsWith("http")) {
                     updateCurrentModule(url);
                     if ("health".equals(currentModuleId)) {
@@ -389,6 +392,7 @@ public class MainActivity extends Activity {
                     return;
                 }
                 lastError = "无法打开 " + request.getUrl() + "\n" + error.getDescription();
+                setShellChromeVisible(true);
                 erroredUrl = request.getUrl().toString();
                 if ("health".equals(moduleIdForUrl(request.getUrl().toString()))) {
                     showHealthOffline();
@@ -416,6 +420,15 @@ public class MainActivity extends Activity {
     }
 
     private void openHome() {
+        AppModule home = registry.get(registry.homeModuleId());
+        if (home != null && home.enabled) {
+            openModule(home.id);
+            return;
+        }
+        openAppCenter();
+    }
+
+    private void openAppCenter() {
         currentModuleId = null;
         currentPageUrl = HOME_URL;
         lastError = "";
@@ -447,6 +460,7 @@ public class MainActivity extends Activity {
         showingHealthOffline = false;
         showingHealthSnapshot = false;
         mainHandler.removeCallbacks(healthProbe);
+        setShellChromeVisible(true);
         titleView.setText(module.name);
         currentPageUrl = UrlTools.bare(targetUrl);
         webView.loadUrl(currentPageUrl);
@@ -462,6 +476,13 @@ public class MainActivity extends Activity {
         currentModuleId = moduleId;
         AppModule module = moduleId == null ? null : registry.get(moduleId);
         titleView.setText(module == null ? "Shadow" : module.name);
+        setShellChromeVisible(!"nexus".equals(moduleId));
+    }
+
+    private void setShellChromeVisible(boolean visible) {
+        if (shellToolbar != null) {
+            shellToolbar.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
     }
 
     private String moduleIdForUrl(String url) {
@@ -544,6 +565,8 @@ public class MainActivity extends Activity {
     private void navigateBack() {
         if (webView.canGoBack() && currentModuleId != null) {
             webView.goBack();
+        } else if ("nexus".equals(currentModuleId)) {
+            finishAfterTransition();
         } else {
             openHome();
         }
@@ -727,6 +750,7 @@ public class MainActivity extends Activity {
                             token.getText().toString(), scale.isChecked(),
                             bindkey.getText().toString(), samsung.isChecked(), reminder.isChecked());
                 })
+                .setNeutralButton("应用中心", (dialog, which) -> openAppCenter())
                 .setNegativeButton("取消", null);
         builder.show();
     }
@@ -826,6 +850,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void openHome() {
             mainHandler.post(MainActivity.this::openHome);
+        }
+
+        @JavascriptInterface
+        public void openAppCenter() {
+            mainHandler.post(MainActivity.this::openAppCenter);
         }
 
         @JavascriptInterface
