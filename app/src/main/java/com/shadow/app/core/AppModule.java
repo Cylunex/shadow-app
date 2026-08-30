@@ -6,7 +6,9 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /** Immutable mobile projection of one Shadow Platform App Catalog entry. */
 public final class AppModule {
@@ -33,6 +35,18 @@ public final class AppModule {
         order = value.optInt("order", 10_000);
         capabilities = value.optJSONArray("capabilities") == null
                 ? new JSONArray() : value.optJSONArray("capabilities");
+        Set<String> seenCapabilities = new HashSet<>();
+        for (int index = 0; index < capabilities.length(); index++) {
+            Object rawCapability = capabilities.get(index);
+            if (!(rawCapability instanceof String)) {
+                throw new JSONException("capability must be a string for " + id);
+            }
+            String capability = (String) rawCapability;
+            if (!isSupportedCapability(capability) || !seenCapabilities.add(capability)) {
+                throw new JSONException("invalid or duplicate capability for " + id
+                        + ": " + capability);
+            }
+        }
 
         JSONObject auth = value.getJSONObject("auth");
         authMode = auth.getString("mode");
@@ -100,5 +114,13 @@ public final class AppModule {
             }
         }
         return false;
+    }
+
+    private static boolean isSupportedCapability(String capability) {
+        return "web".equals(capability) || "health.scale".equals(capability)
+                || "health.samsung".equals(capability) || "notification".equals(capability)
+                || "map".equals(capability) || "media".equals(capability)
+                || "finance".equals(capability) || "inbox".equals(capability)
+                || "operations".equals(capability);
     }
 }

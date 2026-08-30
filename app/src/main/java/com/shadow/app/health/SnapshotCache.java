@@ -342,7 +342,8 @@ final class SnapshotCache {
         String banner = "<div style=\"background:#78350f;color:#fde68a;font-size:13px;"
                 + "text-align:center;padding:6px 10px\">📴 离线快照 · 截至 " + when
                 + " · <a href=\"javascript:void(0)\" "
-                + "onclick=\"window.ShellBridge&&ShellBridge.openOfflinePage()\" "
+                + "onclick=\"window.ShadowNativeBridge&amp;&amp;ShadowNativeBridge."
+                + "request('web','health.offline.open',{}).catch(function(){})\" "
                 + "style=\"color:#fbbf24;text-decoration:underline\">去离线记录</a></div>";
         int bodyTag = html.indexOf("<body");
         if (bodyTag >= 0) {

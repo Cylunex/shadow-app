@@ -52,8 +52,8 @@ Instance 与各项目 Plugin 一次编译，输出 `shadow-app-runtime.json`。�
 | `capabilities` | Mobile | 原生能力允许列表 |
 
 `platform.homeModuleId` 必须引用一个启用的 App 投影。正常部署设为 `nexus`；App 启动、品牌按钮
-和普通领域返回路径都回到这个模块。应用中心不再是启动首页，但可由 Nexus 的设备设置入口或
-`ShellBridge.openAppCenter()` 打开，便于诊断单个领域入口。
+和普通领域返回路径都回到这个模块。应用中心不再是启动首页，但可由 Nexus 的设备设置入口通过
+`ShadowNativeBridge.request("web", "shell.openAppCenter", {})` 打开，便于诊断单个领域入口。
 
 `health_path` 相对每个入口解析。例如规范入口 `https://health.example.com/` 与别名
 `http://nas.example.com/shealth/` 共用 `/healthz`，得到：
@@ -100,7 +100,8 @@ schemaVersion 5 编译投影。
 
 1. 在 `capabilities` 声明；
 2. 在独立 feature 包实现；
-3. 同时校验当前模块和可信 URL；
+3. 远程页面使用 `ShadowNativeBridge`，同时校验主 frame、精确 Origin、当前模块路径、文档
+   nonce、一次性 requestId 与声明 capability；
 4. 在用户主动启用时请求 Android 权限；
 5. 后台写入使用独立 Service Bearer，并保证幂等与审计。
 
@@ -111,7 +112,7 @@ schemaVersion 5 编译投影。
 ### Nexus 分享采集
 
 Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTION_PROCESS_TEXT`，但不会把
-分享内容直接提交给模型或领域服务。壳仅在当前可信模块为 Nexus 时，通过受限 `ShellBridge`
+分享内容直接提交给模型或领域服务。壳仅在当前可信模块为 Nexus 时，通过受限 `ShadowNativeBridge`
 暴露一次性待处理描述；文件内容使用随机 capture ID 对应的只读本地 URL 流式提供。Nexus 成功
 读入文字和附件后回执清除，失败时保留以便重试。
 
@@ -133,13 +134,43 @@ Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTIO
 
 同一受限桥还提供三组 Nexus 专用能力：
 
-- `showBriefNotification(briefJson)`：显示去敏简报，按稳定 id 原生去重；
-- `enqueueOfflineAction(actionJson)`：将有界快捷动作写入 Android Keystore AES-GCM 加密队列；
-- `getOfflineActions()` / `completeOfflineAction(id)`：恢复网络后由 Nexus 重放，只有领域成功响应
+- `brief.show`（`notification`）：显示去敏简报，按稳定 id 原生去重；
+- `offline.enqueue`（`operations`）：将有界快捷动作写入 Android Keystore AES-GCM 加密队列；
+- `offline.list` / `offline.complete`（`operations`）：恢复网络后由 Nexus 重放，只有领域成功响应
   才确认移除。
 
 离线队列不接受任意 URL、脚本或凭据，只保存 `domain + actionId + fields`，不能绕过 Nexus Host
 的风险分类与领域写入协议。
+
+### 安全消息协议
+
+远程模块不再获得同步 `addJavascriptInterface`。页面监听 `shadow-native-ready`，或在加载完成后
+读取 `window.ShadowNativeBridge`；其 `request(capability, operation, payload)` 返回 Promise。
+壳实际接收的 v1 envelope 固定为：
+
+```json
+{
+  "schemaVersion": 1,
+  "requestId": "每次调用唯一的 16-96 位 URL-safe 字符串",
+  "nonce": "当前主文档下发的随机 nonce",
+  "capability": "operations",
+  "operation": "offline.list",
+  "payload": {}
+}
+```
+
+字段必须精确匹配 schema。每次主文档导航、重定向或进程恢复都会使旧 nonce 失效，同一 requestId
+在一个文档中只能使用一次；iframe 即使位于允许的 Origin 也不能调用。Identity、模块基路径外页面
+和未声明 capability 的模块均失败关闭。`ShellBridge` 只在 APK 内置的应用中心、错误页和健康离线页
+装载，用于兼容这些本地资产，进入远程页面前即移除。
+
+分享采集对应 `capture.get` / `capture.complete`（`media`）；健康页的原生称重对应
+`health.scale.start`（`health.scale`）。后台网络恢复仅由 WorkManager 提醒用户回到 Nexus，壳不会
+自行提交离线业务动作。通知权限被撤销时 worker 与前台通知都静默跳过，队列仍保留供下次恢复。
+
+`shell.xml`（Token、bindkey、健康离线数据）与 `nexus_native.xml`（Keystore 密文队列）同时从
+Auto Backup、云备份和设备迁移中排除；WebView/session 文件和 WorkManager 数据库也不参与备份。
+若 OEM 或旧版本仍恢复了无法由本机 Keystore 解密的密文，壳会失败关闭并清除该不可恢复队列。
 
 没有可用备用入口的模块可以把 `aliasUrl` 留空。尚未部署但已完成壳接入的模块应使用
 `enabled=false`，这样清单仍会经过构建校验，但不会显示在应用中心。
@@ -150,11 +181,14 @@ Android 壳接收系统 `ACTION_SEND`（文本、URL、单个文件）与 `ACTIO
 - [ ] 规范入口和每个别名的 `health_path` 返回 200
 - [ ] OIDC/Forward Auth 在 WebView 内往返并回到原模块
 - [ ] Identity 和其他模块不能调用 Health 原生桥接
+- [ ] 恶意 iframe、非手势重定向、旧 nonce 和重复 requestId 均被拒绝
 - [ ] 启动和领域返回进入 `platform.homeModuleId`，Nexus 不显示重复原生工具栏
 - [ ] Quick Action 与 Capture 契约不一致时 Platform 构建失败
 - [ ] L0-L2 动作自动执行并保留回执，L3 进入复核，L4 不执行
 - [ ] Nexus 简报不包含敏感 Entity 值，通知按 brief id 去重
 - [ ] 离线 Quick Action 加密排队，领域成功响应前不会出队
+- [ ] 通知权限撤销后 worker 不崩溃、不重试风暴，重新授权并重启后可恢复提醒
+- [ ] 进程恢复后旧桥 nonce 失效，Keystore 离线队列可重新提示并由 Nexus 继续重放
 - [ ] 公网入口不可达时可切换到 NAS 别名
 - [ ] NAS 不可达时可恢复到规范入口
 - [ ] 外部链接仍交给系统浏览器

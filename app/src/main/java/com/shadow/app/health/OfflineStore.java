@@ -2,8 +2,8 @@ package com.shadow.app.health;
 
 import com.shadow.app.MainActivity;
 import com.shadow.app.R;
+import com.shadow.app.core.NotificationAccess;
 
-import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -11,8 +11,6 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
-import android.os.Build;
 import android.util.Log;
 
 import androidx.work.Constraints;
@@ -284,9 +282,7 @@ final class OfflineStore {
     }
 
     private static void notify(Context ctx, String title, String text) {
-        if (Build.VERSION.SDK_INT >= 33
-                && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
+        if (!NotificationAccess.isAllowed(ctx)) {
             return;
         }
         try {

@@ -19,7 +19,7 @@
       "icon": "app",
       "color": "#64748b",
       "enabled": true,
-      "capabilities": ["web", "media"]
+      "capabilities": ["web", "media", "notification", "operations"]
     },
     {
       "id": "garden",

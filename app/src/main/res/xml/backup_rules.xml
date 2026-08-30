@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Tokens, device secrets, health data, offline records and route state. -->
+    <exclude domain="sharedpref" path="shell.xml" />
+    <!-- Device-bound Android Keystore ciphertext is both sensitive and unrestorable elsewhere. -->
+    <exclude domain="sharedpref" path="nexus_native.xml" />
+    <!-- WebView sessions/snapshots and WorkManager metadata can contain private context. -->
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+</full-backup-content>

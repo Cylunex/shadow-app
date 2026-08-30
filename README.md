@@ -9,7 +9,7 @@ Shadow App 是 Shadow 的 Android 原生运行壳。它默认把 Nexus 作为完
 - 一个连续的 Nexus 工作台，多个边界清晰的领域底座；
 - 业务和数据仍归各领域项目，Nexus 聚合信息与动作，壳负责交付、导航和设备适配；
 - 应用地址由受审查的 Platform Catalog 投影提供，不让用户手工填写；
-- 原生桥按模块与可信 URL 双重授权，默认不给普通网页设备权限。
+- 原生桥按主 frame、Origin、模块路径、文档 nonce、一次性请求与 capability 授权，默认不给普通网页设备权限。
 
 ## 主要功能
 

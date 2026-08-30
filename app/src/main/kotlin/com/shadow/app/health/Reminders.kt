@@ -16,6 +16,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.shadow.app.core.NotificationAccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -105,6 +106,7 @@ class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
     }
 
     private fun notify(message: String) {
+        if (!NotificationAccess.isAllowed(applicationContext)) return
         val nm = applicationContext.getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             nm.createNotificationChannel(

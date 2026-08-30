@@ -102,6 +102,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.webkit:webkit:1.12.1")
     implementation("org.bouncycastle:bcprov-jdk18on:1.84")
 
     testImplementation("junit:junit:4.13.2")
@@ -327,6 +328,10 @@ val validateModules by tasks.registering {
         "app", "archive", "garden", "health", "ledger",
         "platform", "stock", "travel", "verse", "wingman"
     )
+    val supportedCapabilities = setOf(
+        "web", "health.scale", "health.samsung", "notification",
+        "map", "media", "finance", "inbox", "operations"
+    )
     dependsOn(generatePlatformCatalog)
     inputs.file(catalog)
     inputs.dir(iconDirectory)
@@ -432,6 +437,14 @@ val validateModules by tasks.registering {
             val icon = module["icon"] as? String ?: error("modules[$index].icon is required")
             require(icon in supportedIcons) {
                 "modules.json: unsupported icon for $id: $icon"
+            }
+            val capabilities = module["capabilities"] as? List<*>
+                ?: error("modules.json: $id.capabilities must be an array")
+            require(capabilities.all { it is String && it in supportedCapabilities }) {
+                "modules.json: unsupported capability for $id"
+            }
+            require(capabilities.distinct().size == capabilities.size) {
+                "modules.json: duplicate capability for $id"
             }
         }
         if (schemaVersion >= 5) {
