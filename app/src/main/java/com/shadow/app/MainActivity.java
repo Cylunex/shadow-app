@@ -11,6 +11,7 @@ import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -40,6 +41,7 @@ import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -163,6 +165,9 @@ public class MainActivity extends Activity {
         registry = ModuleRegistry.load(this);
         healthFeature = new HealthFeature(this);
 
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(BACKGROUND);
+
         LinearLayout screen = new LinearLayout(this);
         screen.setOrientation(LinearLayout.VERTICAL);
         screen.setBackgroundColor(BACKGROUND);
@@ -173,9 +178,18 @@ public class MainActivity extends Activity {
         webView.setBackgroundColor(BACKGROUND);
         screen.addView(webView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        setContentView(screen);
+        root.addView(screen, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        Button scaleQuickButton = createScaleQuickButton();
+        FrameLayout.LayoutParams scaleParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, dp(48), Gravity.END | Gravity.BOTTOM);
+        scaleParams.setMargins(dp(16), dp(16), dp(16), dp(82));
+        root.addView(scaleQuickButton, scaleParams);
+
+        setContentView(root);
         applySystemBarAppearance(window);
-        applySystemBarInsets(screen);
+        applySystemBarInsets(root);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -332,6 +346,28 @@ public class MainActivity extends Activity {
         button.setPadding(0, 0, 0, 0);
         button.setOnClickListener(listener);
         button.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
+        return button;
+    }
+
+    private Button createScaleQuickButton() {
+        Button button = new Button(this);
+        button.setText("⚖  称重");
+        button.setContentDescription("接收体重，开启体脂秤监听三分钟");
+        button.setTextSize(14);
+        button.setTextColor(Color.rgb(7, 16, 27));
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setAllCaps(false);
+        button.setMinWidth(dp(96));
+        button.setMinimumWidth(dp(96));
+        button.setPadding(dp(16), 0, dp(16), 0);
+        button.setElevation(dp(8));
+
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(BRAND_CYAN);
+        background.setCornerRadius(dp(24));
+        background.setStroke(dp(1), Color.rgb(91, 189, 204));
+        button.setBackground(background);
+        button.setOnClickListener(view -> healthFeature.startTimedScaleScan());
         return button;
     }
 
