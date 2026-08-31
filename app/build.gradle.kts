@@ -45,8 +45,8 @@ android {
         applicationId = "com.shadow.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.5.1"
+        versionCode = 13
+        versionName = "0.6.0"
 
         buildConfigField("boolean", "SAMSUNG_HEALTH_AVAILABLE", samsungHealthEnabled.toString())
     }

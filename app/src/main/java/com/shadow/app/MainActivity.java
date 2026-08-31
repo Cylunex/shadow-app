@@ -7,11 +7,14 @@ import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.PorterDuff;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -22,6 +25,7 @@ import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -38,12 +42,13 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.Space;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -91,6 +96,8 @@ public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 44;
     private static final int BACKGROUND = Color.rgb(13, 17, 23);
     private static final int BRAND_CYAN = Color.rgb(166, 241, 255);
+    private static final int SURFACE = Color.rgb(11, 18, 26);
+    private static final int NAV_MUTED = Color.rgb(112, 133, 148);
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -101,6 +108,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private View shellToolbar;
     private TextView titleView;
+    private final Map<String, NavItemRefs> navigationItems = new HashMap<>();
     private SharedPreferences prefs;
     private ModuleRegistry registry;
     private HealthFeature healthFeature;
@@ -114,6 +122,16 @@ public class MainActivity extends Activity {
     private boolean showingHealthSnapshot;
     private volatile PendingShareCapture pendingShareCapture;
     private volatile boolean localBridgeAttached;
+
+    private static final class NavItemRefs {
+        final ImageView icon;
+        final TextView label;
+
+        NavItemRefs(ImageView icon, TextView label) {
+            this.icon = icon;
+            this.label = label;
+        }
+    }
 
     private static final class PendingShareCapture {
         final String id;
@@ -178,14 +196,15 @@ public class MainActivity extends Activity {
         webView.setBackgroundColor(BACKGROUND);
         screen.addView(webView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        root.addView(screen, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams screenParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+        screenParams.bottomMargin = dp(80);
+        root.addView(screen, screenParams);
 
-        Button scaleQuickButton = createScaleQuickButton();
-        FrameLayout.LayoutParams scaleParams = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, dp(48), Gravity.END | Gravity.BOTTOM);
-        scaleParams.setMargins(dp(16), dp(16), dp(16), dp(82));
-        root.addView(scaleQuickButton, scaleParams);
+        View bottomNavigation = createBottomNavigation();
+        FrameLayout.LayoutParams navigationParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, dp(88), Gravity.BOTTOM);
+        root.addView(bottomNavigation, navigationParams);
 
         setContentView(root);
         applySystemBarAppearance(window);
@@ -257,42 +276,131 @@ public class MainActivity extends Activity {
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.VERTICAL);
         shell.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(56)));
 
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(dp(6), 0, dp(6), 0);
-        toolbar.setBackgroundColor(BACKGROUND);
+        toolbar.setPadding(dp(8), 0, dp(8), 0);
+        toolbar.setBackgroundColor(SURFACE);
         toolbar.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(47)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(55)));
 
-        toolbar.addView(toolbarButton("‹", view -> navigateBack()));
-        ImageView brandIcon = new ImageView(this);
-        brandIcon.setImageResource(R.mipmap.ic_launcher);
-        brandIcon.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        brandIcon.setContentDescription("返回 Shadow 应用中心");
-        brandIcon.setOnClickListener(view -> openHome());
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(34), dp(34));
-        iconParams.setMargins(dp(2), 0, dp(6), 0);
-        toolbar.addView(brandIcon, iconParams);
+        toolbar.addView(toolbarIcon(R.drawable.ic_toolbar_back, "返回", view -> navigateBack()));
         titleView = new TextView(this);
         titleView.setText("应用中心");
         titleView.setTextColor(Color.rgb(238, 244, 246));
-        titleView.setTextSize(15);
-        titleView.setTypeface(Typeface.create("serif", Typeface.BOLD));
-        titleView.setLetterSpacing(0.06f);
+        titleView.setTextSize(17);
+        titleView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         titleView.setGravity(Gravity.CENTER_VERTICAL);
-        titleView.setPadding(dp(4), 0, dp(6), 0);
+        titleView.setPadding(dp(8), 0, dp(8), 0);
         toolbar.addView(titleView, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.MATCH_PARENT, 1));
-        toolbar.addView(toolbarButton("↻", view -> webView.reload()));
-        toolbar.addView(toolbarButton("⋮", view -> showSettings()));
+        toolbar.addView(toolbarIcon(R.drawable.ic_toolbar_refresh, "刷新", view -> webView.reload()));
+        toolbar.addView(toolbarIcon(R.drawable.ic_toolbar_more, "设置", view -> showSettings()));
         shell.addView(toolbar);
         View divider = new View(this);
-        divider.setBackgroundColor(Color.rgb(34, 58, 70));
+        divider.setBackgroundColor(Color.rgb(28, 43, 54));
         shell.addView(divider, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
         return shell;
+    }
+
+    private View createBottomNavigation() {
+        FrameLayout dock = new FrameLayout(this);
+        dock.setClipChildren(false);
+        dock.setClipToPadding(false);
+        dock.setElevation(dp(16));
+
+        GradientDrawable dockBackground = new GradientDrawable();
+        dockBackground.setColor(SURFACE);
+        dockBackground.setCornerRadii(new float[]{
+                dp(22), dp(22), dp(22), dp(22), 0, 0, 0, 0});
+
+        LinearLayout destinations = new LinearLayout(this);
+        destinations.setGravity(Gravity.CENTER_VERTICAL);
+        destinations.setPadding(dp(4), dp(4), dp(4), 0);
+        destinations.setBackground(dockBackground);
+        FrameLayout.LayoutParams destinationParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, dp(72), Gravity.BOTTOM);
+        dock.addView(destinations, destinationParams);
+
+        destinations.addView(createNavigationItem("home", "首页", R.drawable.ic_nav_home,
+                view -> openHome()), weightedNavigationParams());
+        destinations.addView(createNavigationItem("apps", "应用", R.drawable.ic_nav_apps,
+                view -> openAppCenter()), weightedNavigationParams());
+        Space actionGap = new Space(this);
+        destinations.addView(actionGap, new LinearLayout.LayoutParams(dp(72), dp(1)));
+        destinations.addView(createNavigationItem("health", "健康", R.drawable.ic_nav_health,
+                view -> openModule("health")), weightedNavigationParams());
+        destinations.addView(createNavigationItem("settings", "设置", R.drawable.ic_nav_settings,
+                view -> showSettings()), weightedNavigationParams());
+
+        LinearLayout scaleAction = new LinearLayout(this);
+        scaleAction.setOrientation(LinearLayout.VERTICAL);
+        scaleAction.setGravity(Gravity.CENTER_HORIZONTAL);
+        scaleAction.setContentDescription("接收体重，开启体脂秤监听三分钟");
+
+        ImageButton scaleButton = new ImageButton(this);
+        scaleButton.setImageResource(R.drawable.ic_nav_scale);
+        scaleButton.setColorFilter(Color.rgb(5, 19, 24), PorterDuff.Mode.SRC_IN);
+        scaleButton.setScaleType(ImageView.ScaleType.CENTER);
+        scaleButton.setPadding(dp(15), dp(15), dp(15), dp(15));
+        GradientDrawable scaleShape = new GradientDrawable();
+        scaleShape.setShape(GradientDrawable.OVAL);
+        scaleShape.setColor(BRAND_CYAN);
+        scaleShape.setStroke(dp(1), Color.rgb(74, 184, 199));
+        scaleButton.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(Color.argb(45, 0, 0, 0)), scaleShape, null));
+        scaleButton.setElevation(dp(10));
+        scaleButton.setOnClickListener(view -> {
+            view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+            healthFeature.startTimedScaleScan();
+        });
+        scaleAction.addView(scaleButton, new LinearLayout.LayoutParams(dp(58), dp(58)));
+
+        TextView scaleLabel = new TextView(this);
+        scaleLabel.setText("称重");
+        scaleLabel.setTextColor(BRAND_CYAN);
+        scaleLabel.setTextSize(11);
+        scaleLabel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        scaleLabel.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams scaleLabelParams = new LinearLayout.LayoutParams(dp(72), dp(24));
+        scaleLabelParams.topMargin = dp(1);
+        scaleAction.addView(scaleLabel, scaleLabelParams);
+
+        FrameLayout.LayoutParams actionParams = new FrameLayout.LayoutParams(
+                dp(80), dp(88), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        dock.addView(scaleAction, actionParams);
+        return dock;
+    }
+
+    private LinearLayout.LayoutParams weightedNavigationParams() {
+        return new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1);
+    }
+
+    private View createNavigationItem(String key, String labelText, int iconResource,
+                                      View.OnClickListener listener) {
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER);
+        item.setMinimumHeight(dp(56));
+        item.setContentDescription(labelText);
+        item.setOnClickListener(listener);
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconResource);
+        icon.setScaleType(ImageView.ScaleType.CENTER);
+        icon.setPadding(dp(10), dp(5), dp(10), dp(5));
+        item.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(34)));
+
+        TextView label = new TextView(this);
+        label.setText(labelText);
+        label.setTextSize(11);
+        label.setGravity(Gravity.CENTER);
+        item.addView(label, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(22)));
+        navigationItems.put(key, new NavItemRefs(icon, label));
+        return item;
     }
 
     private void applySystemBarInsets(View root) {
@@ -335,39 +443,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    private Button toolbarButton(String text, View.OnClickListener listener) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setTextSize(20);
-        button.setTextColor(BRAND_CYAN);
+    private ImageButton toolbarIcon(int iconResource, String description,
+                                    View.OnClickListener listener) {
+        ImageButton button = new ImageButton(this);
+        button.setImageResource(iconResource);
+        button.setColorFilter(Color.rgb(179, 199, 209), PorterDuff.Mode.SRC_IN);
         button.setBackgroundColor(Color.TRANSPARENT);
-        button.setMinWidth(dp(44));
-        button.setMinimumWidth(dp(44));
-        button.setPadding(0, 0, 0, 0);
+        button.setContentDescription(description);
+        button.setPadding(dp(12), dp(12), dp(12), dp(12));
         button.setOnClickListener(listener);
-        button.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
-        return button;
-    }
-
-    private Button createScaleQuickButton() {
-        Button button = new Button(this);
-        button.setText("⚖  称重");
-        button.setContentDescription("接收体重，开启体脂秤监听三分钟");
-        button.setTextSize(14);
-        button.setTextColor(Color.rgb(7, 16, 27));
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setAllCaps(false);
-        button.setMinWidth(dp(96));
-        button.setMinimumWidth(dp(96));
-        button.setPadding(dp(16), 0, dp(16), 0);
-        button.setElevation(dp(8));
-
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(BRAND_CYAN);
-        background.setCornerRadius(dp(24));
-        background.setStroke(dp(1), Color.rgb(91, 189, 204));
-        button.setBackground(background);
-        button.setOnClickListener(view -> healthFeature.startTimedScaleScan());
+        button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
         return button;
     }
 
@@ -420,7 +505,8 @@ public class MainActivity extends Activity {
                 if (HOME_URL.equals(url)) {
                     currentModuleId = null;
                     titleView.setText("应用中心");
-                    setShellChromeVisible(true);
+                    setShellChromeVisible(false);
+                    updateNavigationState();
                 } else if (url != null && url.startsWith("http")) {
                     updateCurrentModule(url);
                     if ("health".equals(currentModuleId)) {
@@ -748,6 +834,8 @@ public class MainActivity extends Activity {
         showingHealthSnapshot = false;
         mainHandler.removeCallbacks(healthProbe);
         titleView.setText("应用中心");
+        setShellChromeVisible(false);
+        updateNavigationState();
         setLocalBridgeAttached(true);
         webView.loadUrl(HOME_URL);
         webView.clearHistory();
@@ -771,8 +859,9 @@ public class MainActivity extends Activity {
         showingHealthOffline = false;
         showingHealthSnapshot = false;
         mainHandler.removeCallbacks(healthProbe);
-        setShellChromeVisible(true);
+        setShellChromeVisible(!"nexus".equals(module.id));
         titleView.setText(module.name);
+        updateNavigationState();
         currentPageUrl = UrlTools.bare(targetUrl);
         setLocalBridgeAttached(false);
         webView.loadUrl(currentPageUrl);
@@ -789,11 +878,40 @@ public class MainActivity extends Activity {
         AppModule module = moduleId == null ? null : registry.get(moduleId);
         titleView.setText(module == null ? "Shadow" : module.name);
         setShellChromeVisible(!"nexus".equals(moduleId));
+        updateNavigationState();
     }
 
     private void setShellChromeVisible(boolean visible) {
         if (shellToolbar != null) {
             shellToolbar.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void updateNavigationState() {
+        String selected = null;
+        if (HOME_URL.equals(currentPageUrl) && currentModuleId == null) {
+            selected = "apps";
+        } else if ("nexus".equals(currentModuleId)) {
+            selected = "home";
+        } else if ("health".equals(currentModuleId)) {
+            selected = "health";
+        }
+        for (Map.Entry<String, NavItemRefs> entry : navigationItems.entrySet()) {
+            boolean active = entry.getKey().equals(selected);
+            NavItemRefs refs = entry.getValue();
+            int color = active ? BRAND_CYAN : NAV_MUTED;
+            refs.icon.setColorFilter(color, PorterDuff.Mode.SRC_IN);
+            refs.label.setTextColor(color);
+            refs.label.setTypeface(Typeface.create(
+                    active ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+            if (active) {
+                GradientDrawable indicator = new GradientDrawable();
+                indicator.setColor(Color.rgb(20, 49, 58));
+                indicator.setCornerRadius(dp(18));
+                refs.icon.setBackground(indicator);
+            } else {
+                refs.icon.setBackgroundColor(Color.TRANSPARENT);
+            }
         }
     }
 
@@ -821,6 +939,8 @@ public class MainActivity extends Activity {
         loadingErrorPage = false;
         showingHealthOffline = true;
         showingHealthSnapshot = false;
+        setShellChromeVisible(true);
+        updateNavigationState();
         setLocalBridgeAttached(true);
         webView.loadUrl(HEALTH_OFFLINE_URL);
         scheduleHealthProbe();
@@ -1021,58 +1141,94 @@ public class MainActivity extends Activity {
     }
 
     private void showSettings() {
-        EditText token = new EditText(this);
-        token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        token.setHint("健康服务 INGEST_TOKEN");
-        token.setText(prefs.getString(HealthFeature.KEY_INGEST_TOKEN, ""));
+        TextView intro = new TextView(this);
+        intro.setText(R.string.settings_device_intro);
+        intro.setTextColor(Color.rgb(157, 176, 187));
+        intro.setTextSize(13);
+        intro.setLineSpacing(0, 1.25f);
+        intro.setPadding(0, 0, 0, dp(12));
 
-        CheckBox scale = new CheckBox(this);
+        Switch scale = new Switch(this);
         scale.setText("后台监听体脂秤");
+        scale.setContentDescription("后台监听体脂秤");
         scale.setChecked(prefs.getBoolean(HealthFeature.KEY_SCALE_SCAN, false));
 
-        EditText bindkey = new EditText(this);
-        bindkey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        bindkey.setHint("小米 S400 bindkey（旧秤留空）");
-        bindkey.setText(prefs.getString(HealthFeature.KEY_SCALE_BINDKEY, ""));
-
-        CheckBox samsung = new CheckBox(this);
+        Switch samsung = new Switch(this);
         samsung.setText(SamsungSync.isAvailable()
-                ? "同步三星健康数据" : "同步三星健康数据（未安装 SDK）");
+                ? "同步三星健康数据" : "三星健康 SDK 不可用");
         samsung.setEnabled(SamsungSync.isAvailable());
         samsung.setChecked(SamsungSync.isAvailable()
                 && prefs.getBoolean(SamsungSync.PREF_ENABLED, false));
 
-        CheckBox reminder = new CheckBox(this);
-        reminder.setText("每日健康提醒（20:30）");
+        Switch reminder = new Switch(this);
+        reminder.setText(R.string.settings_daily_health_reminder);
         reminder.setChecked(prefs.getBoolean(Reminders.PREF_ENABLED, false));
-
-        TextView hint = new TextView(this);
-        hint.setText("应用地址和认证方式由 Shadow Platform Catalog 管理，无需手动填写。\n"
-                + "统一登录：" + registry.identityIssuer() + "\n"
-                + "壳会在应用规范域名与本地 DNS 别名之间自动切换；这里只保留健康设备设置。");
-        hint.setTextSize(12);
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(18), dp(6), dp(18), 0);
-        content.addView(token);
-        content.addView(scale);
-        content.addView(bindkey);
-        content.addView(samsung);
-        content.addView(reminder);
-        content.addView(hint);
+        content.setPadding(dp(22), dp(8), dp(22), dp(4));
+        content.addView(intro);
+        content.addView(scale, settingsControlParams());
+        content.addView(samsung, settingsControlParams());
+        content.addView(reminder, settingsControlParams());
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle("Shadow 平台与设备")
+                .setTitle("设备与同步")
                 .setView(content)
                 .setPositiveButton("保存", (dialog, which) -> {
                     healthFeature.applySettings(
-                            token.getText().toString(), scale.isChecked(),
-                            bindkey.getText().toString(), samsung.isChecked(), reminder.isChecked());
+                            prefs.getString(HealthFeature.KEY_INGEST_TOKEN, ""), scale.isChecked(),
+                            prefs.getString(HealthFeature.KEY_SCALE_BINDKEY, ""),
+                            samsung.isChecked(), reminder.isChecked());
                 })
-                .setNeutralButton("应用中心", (dialog, which) -> openAppCenter())
-                .setNegativeButton("取消", null);
+                .setNeutralButton("高级配置", (dialog, which) -> showAdvancedHealthSettings())
+                .setNegativeButton("关闭", null);
         builder.show();
+    }
+
+    private LinearLayout.LayoutParams settingsControlParams() {
+        return new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
+    }
+
+    private void showAdvancedHealthSettings() {
+        EditText token = new EditText(this);
+        token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        token.setHint("健康服务 INGEST_TOKEN");
+        token.setSingleLine(true);
+        token.setText(prefs.getString(HealthFeature.KEY_INGEST_TOKEN, ""));
+
+        EditText bindkey = new EditText(this);
+        bindkey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        bindkey.setHint("小米 S400 bindkey（旧秤留空）");
+        bindkey.setSingleLine(true);
+        bindkey.setText(prefs.getString(HealthFeature.KEY_SCALE_BINDKEY, ""));
+
+        TextView hint = new TextView(this);
+        hint.setText("仅首次接入设备或轮换服务凭据时需要修改。内容只保存在本机，不进入云备份。");
+        hint.setTextColor(Color.rgb(139, 157, 169));
+        hint.setTextSize(12);
+        hint.setLineSpacing(0, 1.2f);
+        hint.setPadding(0, dp(12), 0, 0);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(22), dp(6), dp(22), 0);
+        content.addView(token);
+        content.addView(bindkey);
+        content.addView(hint);
+
+        new AlertDialog.Builder(this)
+                .setTitle("高级健康配置")
+                .setView(content)
+                .setPositiveButton("保存", (dialog, which) -> healthFeature.applySettings(
+                        token.getText().toString(),
+                        prefs.getBoolean(HealthFeature.KEY_SCALE_SCAN, false),
+                        bindkey.getText().toString(),
+                        prefs.getBoolean(SamsungSync.PREF_ENABLED, false),
+                        prefs.getBoolean(Reminders.PREF_ENABLED, false)))
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void download(String url, String userAgent, String contentDisposition,

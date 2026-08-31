@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shadow</string>
+    <string name="settings_device_intro">服务地址与登录由 Shadow Platform 自动管理。这里只设置手机上的设备采集与提醒。</string>
+    <string name="settings_daily_health_reminder">每日健康提醒（20:30）</string>
+</resources>
