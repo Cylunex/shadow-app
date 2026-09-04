@@ -28,6 +28,7 @@ public final class HealthFeature {
     private final Activity activity;
     private final SharedPreferences prefs;
     private boolean pendingTimedScan;
+    private String pendingAttemptId = "";
 
     public HealthFeature(Activity activity) {
         this.activity = activity;
@@ -91,9 +92,16 @@ public final class HealthFeature {
     }
 
     public void startTimedScaleScan() {
+        startTimedScaleScan(java.util.UUID.randomUUID().toString());
+    }
+
+    public void startTimedScaleScan(String attemptId) {
+        pendingAttemptId = attemptId;
+        ScaleAttempt.begin(activity, attemptId);
         List<String> missing = missingScalePermissions();
         if (!missing.isEmpty()) {
             pendingTimedScan = true;
+            ScaleAttempt.stage(activity, pendingAttemptId, "permission_required");
             activity.requestPermissions(missing.toArray(new String[0]), REQUEST_PERMISSIONS);
             return;
         }
@@ -118,6 +126,7 @@ public final class HealthFeature {
         if (granted) {
             startScaleService(timed);
         } else {
+            ScaleAttempt.stage(activity, pendingAttemptId, "permission_denied");
             if (!timed) {
                 prefs.edit().putBoolean(KEY_SCALE_SCAN, false).apply();
             }
@@ -142,11 +151,13 @@ public final class HealthFeature {
         Intent intent = new Intent(activity, ScaleScanService.class);
         if (timed) {
             intent.putExtra(ScaleScanService.EXTRA_TIMED, true);
+            intent.putExtra("attempt_id", pendingAttemptId);
         }
         try {
             activity.startForegroundService(intent);
             return true;
         } catch (RuntimeException e) {
+            ScaleAttempt.stage(activity, pendingAttemptId, "start_failed");
             Log.e(TAG, "start scale foreground service failed", e);
             if (!timed) {
                 prefs.edit().putBoolean(KEY_SCALE_SCAN, false).apply();

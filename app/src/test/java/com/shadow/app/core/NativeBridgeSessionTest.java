@@ -94,4 +94,21 @@ public class NativeBridgeSessionTest {
                 restoredProcess.authorize("https://nexus.example.com", true, 1,
                         "after_restart_0001", NONCE, "operations", "offline.list"));
     }
+
+    @Test
+    public void scaleTelemetryRequiresHealthModuleAndCapability() {
+        NativeBridgeSession health = new NativeBridgeSession();
+        assertTrue(health.beginDocument("health", "https://health.example.com/",
+                Arrays.asList("https://health.example.com/"),
+                new HashSet<>(Arrays.asList("web", "health.scale")), NONCE));
+        assertEquals(NativeBridgeSession.Authorization.ALLOWED,
+                health.authorize("https://health.example.com", true, 1,
+                        "scale_status_req_01", NONCE, "health.scale", "health.scale.status"));
+        assertEquals(NativeBridgeSession.Authorization.CAPABILITY_MISMATCH,
+                health.authorize("https://health.example.com", true, 1,
+                        "scale_status_req_02", NONCE, "web", "health.scale.status"));
+        assertEquals(NativeBridgeSession.Authorization.WRONG_MODULE,
+                nexusSession().authorize("https://nexus.example.com", true, 1,
+                        "scale_status_req_03", NONCE, "health.scale", "health.scale.status"));
+    }
 }

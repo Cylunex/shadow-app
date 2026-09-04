@@ -50,6 +50,7 @@ public final class NativeBridgeSession {
         values.put("shell.openSettings", "web");
         values.put("shell.openAppCenter", "web");
         values.put("health.scale.start", "health.scale");
+        values.put("health.scale.status", "health.scale");
         values.put("health.offline.open", "web");
         OPERATION_CAPABILITIES = Collections.unmodifiableMap(values);
 
@@ -63,6 +64,7 @@ public final class NativeBridgeSession {
         modules.put("shell.openSettings", "nexus");
         modules.put("shell.openAppCenter", "nexus");
         modules.put("health.scale.start", "health");
+        modules.put("health.scale.status", "health");
         modules.put("health.offline.open", "health");
         OPERATION_MODULES = Collections.unmodifiableMap(modules);
     }

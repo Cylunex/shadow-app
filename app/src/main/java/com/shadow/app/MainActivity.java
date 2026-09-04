@@ -737,8 +737,12 @@ public class MainActivity extends Activity {
                 return new JSONObject();
             case "health.scale.start":
                 requireExactKeys(payload);
-                mainHandler.post(healthFeature::startTimedScaleScan);
-                return new JSONObject();
+                String attemptId = java.util.UUID.randomUUID().toString();
+                mainHandler.post(() -> healthFeature.startTimedScaleScan(attemptId));
+                return new JSONObject().put("attempt_id", attemptId);
+            case "health.scale.status":
+                requireExactKeys(payload, "attempt_id");
+                return com.shadow.app.health.ScaleAttempt.read(this, payload.getString("attempt_id"));
             case "health.offline.open":
                 requireExactKeys(payload);
                 mainHandler.post(this::showHealthOffline);

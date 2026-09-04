@@ -90,6 +90,7 @@ public class ScaleScanService extends Service {
     private int activeScanMode = -1;
     /** true=用户刚点了开秤，短时高占空比；false=常驻后台低功耗。 */
     private boolean measurementMode;
+    private String currentAttemptId = "";
     private boolean keepAlive;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -111,6 +112,7 @@ public class ScaleScanService extends Service {
         Integer heartRate;
         Integer profileId;
         String model;
+        String attemptId = "";
         final Runnable flush;
 
         Measurement(String key, String tsIso, double weightKg, Double impedance, Runnable flush) {
@@ -179,6 +181,7 @@ public class ScaleScanService extends Service {
         boolean requestedMeasurement = intent != null
                 && intent.getBooleanExtra(EXTRA_TIMED, false);
         measurementMode = requestedMeasurement;
+        if (requestedMeasurement) currentAttemptId = intent.getStringExtra("attempt_id");
 
         Notification n = buildNotification(
                 requestedMeasurement
@@ -197,6 +200,7 @@ public class ScaleScanService extends Service {
         if (requestedMeasurement) {
             // 每次点击都重建扫描。三星系统偶尔会留下“仍在运行但收不到广播”的会话，
             // 原实现因 scanCallback != null 直接返回，用户重复点击实际没有重试。
+            ScaleAttempt.stage(this, currentAttemptId, "scanning");
             restartScan(true);
             handler.postDelayed(finishMeasurementMode, TIMED_SCAN_MS);
         } else {
@@ -254,6 +258,7 @@ public class ScaleScanService extends Service {
     @SuppressLint("MissingPermission") // guarded by hasScanPermission() immediately below
     private void startScan(boolean highDutyCycle) {
         if (!hasScanPermission()) {
+            ScaleAttempt.stage(this, currentAttemptId, "permission_required");
             updateNotification("缺少蓝牙扫描权限");
             return;
         }
@@ -269,6 +274,7 @@ public class ScaleScanService extends Service {
             BluetoothManager bm = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
             adapter = bm == null ? null : bm.getAdapter();
             if (adapter == null || !adapter.isEnabled()) {
+                ScaleAttempt.stage(this, currentAttemptId, "bluetooth_off");
                 updateNotification("蓝牙未开启");
                 return;
             }
@@ -286,18 +292,23 @@ public class ScaleScanService extends Service {
         scanCallback = new ScanCallback() {
             @Override
             public void onScanResult(int callbackType, ScanResult result) {
+                if (ScaleScanService.this.scanCallback != this) return;
                 if (result == null || result.getScanRecord() == null) {
                     return;
                 }
                 byte[] data = result.getScanRecord().getServiceData(uuidBodyComposition);
                 if (data != null) {
-                    handler.post(() -> handleFrame(data));  // 状态统一主线程访问
+                    handler.post(() -> {
+                        if (ScaleScanService.this.scanCallback == this) handleFrame(data);
+                    });  // 旧扫描排队回调也不能覆盖新会话
                 }
                 byte[] s400 = result.getScanRecord().getServiceData(uuidMibeacon);
                 if (s400 != null && result.getDevice() != null) {
                     try {
                         String address = result.getDevice().getAddress();
-                        handler.post(() -> handleS400Frame(address, s400));
+                        handler.post(() -> {
+                            if (ScaleScanService.this.scanCallback == this) handleS400Frame(address, s400);
+                        });
                     } catch (SecurityException e) {
                         Log.e(TAG, "cannot read Bluetooth device address", e);
                     }
@@ -306,10 +317,12 @@ public class ScaleScanService extends Service {
 
             @Override
             public void onScanFailed(int errorCode) {
+                if (ScaleScanService.this.scanCallback != this) return;
                 Log.w(TAG, "scan failed: " + errorCode);
                 updateNotification("扫描失败（" + errorCode + "），重试开秤");
                 // 系统已经终止本次扫描；清状态才能让再次点击真正重建会话。
                 if (ScaleScanService.this.scanCallback == this) {
+                    ScaleAttempt.stage(ScaleScanService.this, currentAttemptId, "scan_failed");
                     ScaleScanService.this.scanCallback = null;
                     ScaleScanService.this.scanner = null;
                     activeScanMode = -1;
@@ -341,6 +354,7 @@ public class ScaleScanService extends Service {
                 scanner.startScan(null, settings, scanCallback);
                 activeScanMode = requestedMode;
             } catch (Exception e2) {
+                ScaleAttempt.stage(this, currentAttemptId, "scan_failed");
                 Log.e(TAG, "startScan failed", e2);
                 updateNotification("无扫描权限或蓝牙异常");
                 scanCallback = null;
@@ -421,6 +435,7 @@ public class ScaleScanService extends Service {
             Runnable flush = () -> flushS400(deviceKey);
             Measurement m = new Measurement(
                     key, tsIso, frame.weightKg, frame.impedanceLow, flush);
+            m.attemptId = currentAttemptId == null ? "" : currentAttemptId;
             m.heartRate = frame.heartRate;
             m.profileId = frame.profileId;
             m.model = "MJTZC01YM/S400";
@@ -540,6 +555,7 @@ public class ScaleScanService extends Service {
             final String fKey = key;
             Runnable flush = () -> flushMeasurement(fKey);
             m = new Measurement(key, tsIso, weight, impedance, flush);
+            m.attemptId = currentAttemptId == null ? "" : currentAttemptId;
             pending.put(key, m);
             handler.postDelayed(flush, SETTLE_MS);
         } else if (m.impedance == null && impedance != null) {
@@ -557,29 +573,33 @@ public class ScaleScanService extends Service {
         if (m == null) {
             return;
         }
+        final String captureAttempt = m.attemptId;
+        ScaleAttempt.stage(this, captureAttempt, "captured");
         sent.put(key, System.currentTimeMillis());
         SharedPreferences prefs = getSharedPreferences("shell", MODE_PRIVATE);
         final String token = prefs.getString("ingest_token", "");
         if (HealthServerConfig.active(this).isEmpty() || token.isEmpty()) {
+            ScaleAttempt.stage(this, captureAttempt, "configuration_required");
             updateNotification("未配置服务器/Token");
             return;
         }
         final String measurementJson = String.format(Locale.US,
                 "{\"ts\":\"%s\",\"weight_kg\":%.2f,\"impedance\":%s,"
                         + "\"impedance_low\":%s,\"impedance_high\":%s,"
-                        + "\"heart_rate\":%s,\"profile_id\":%s,\"model\":\"%s\"}",
+                        + "\"heart_rate\":%s,\"profile_id\":%s,\"model\":\"%s\",\"attempt_id\":\"%s\"}",
                 m.tsIso, m.weightKg,
                 m.impedance == null ? "null" : m.impedance.toString(),
                 m.impedance == null ? "null" : m.impedance.toString(),
                 m.impedanceHigh == null ? "null" : m.impedanceHigh.toString(),
                 m.heartRate == null ? "null" : m.heartRate.toString(),
                 m.profileId == null ? "null" : m.profileId.toString(),
-                m.model);
+                m.model, captureAttempt);
         io.execute(() -> {
             // 多服务器：探测可达地址（IO 线程）；全不通退回活动地址走原有三连重试
             String server = HealthServerConfig.resolveOrActive(ScaleScanService.this);
             boolean ok = false;
             for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+                ScaleAttempt.stage(ScaleScanService.this, captureAttempt, attempt == 1 ? "uploading" : "retrying");
                 ok = postJson(server + "/api/ingest/miscale", token,
                         "{\"measurements\":[" + measurementJson + "]}");
                 if (!ok) {
@@ -592,10 +612,12 @@ public class ScaleScanService extends Service {
                 }
             }
             if (ok) {
+                ScaleAttempt.stage(ScaleScanService.this, captureAttempt, "server_received");
                 drainQueue(server, token);  // 顺带补发之前积压的
             } else {
                 // 三连失败：落本地队列，保留 sent 键防同一测量的后续广播重复入队
                 enqueueFailed(measurementJson);
+                ScaleAttempt.stage(ScaleScanService.this, captureAttempt, "queued");
             }
             final String text = ok
                     ? String.format(Locale.US, "已记录 %.2f kg%s", m.weightKg,
