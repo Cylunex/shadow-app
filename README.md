@@ -44,3 +44,5 @@ SHADOW_APP_RUNTIME_FILE=/path/to/shadow-app-runtime.json \
 - [模块接入规范](docs/module-integration.md)
 - [品牌规范](docs/brand.md)
 - [模块清单 Schema](docs/module.schema.json)
+
+- [统一鉴权、Agent 与 Nexus 接入设计（目标方案，尚未实现）](docs/nexus-integration-design.md)
