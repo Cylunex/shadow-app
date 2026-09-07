@@ -724,8 +724,9 @@ public class MainActivity extends Activity {
                 requireExactKeys(payload);
                 return new JSONArray(NexusNative.actionsJson(this));
             case "offline.complete":
-                requireExactKeys(payload, "actionId");
-                NexusNative.completeAction(this, payload.getString("actionId"));
+                requireExactKeys(payload, "actionId", "result");
+                NexusNative.completeAction(this, payload.getString("actionId"),
+                        payload.getJSONObject("result").toString());
                 return new JSONObject();
             case "shell.openSettings":
                 requireExactKeys(payload);

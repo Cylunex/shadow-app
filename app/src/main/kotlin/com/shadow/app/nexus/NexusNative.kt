@@ -25,6 +25,7 @@ import org.json.JSONObject
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -51,15 +52,21 @@ object NexusNative {
     fun enqueueAction(context: Context, raw: String): String {
         require(raw.toByteArray(StandardCharsets.UTF_8).size <= 64 * 1024) { "action too large" }
         val input = JSONObject(raw)
-        require(input.keys().asSequence().toSet() == setOf("domain", "actionId", "fields")) {
+        require(input.keys().asSequence().toSet() == setOf("sessionId", "domain", "actionId", "fields")) {
             "unexpected action fields"
         }
+        require(input.optString("sessionId").matches(Regex("^[A-Za-z0-9_.:-]{1,256}$")))
         require(input.optString("domain").matches(Regex("^[a-z][a-z0-9-]{1,63}$")))
         require(input.optString("actionId").matches(Regex("^[a-z][a-z0-9-]{1,63}$")))
         val fields = requireNotNull(input.optJSONObject("fields"))
         validateFields(fields, 0)
         val id = "offline_${UUID.randomUUID()}"
-        input.put("id", id).put("createdAt", Instant.now().toString())
+        val now = Instant.now().toString()
+        input.put("id", id)
+            .put("commandId", "cmd_" + id.removePrefix("offline_").replace("-", ""))
+            .put("enqueuedAt", now)
+            .put("effectiveAt", now)
+            .put("timeZone", ZoneId.systemDefault().id)
         synchronized(lock) {
             val actions = readActions(context)
             require(actions.length() < MAX_ACTIONS) { "offline queue is full" }
@@ -76,8 +83,14 @@ object NexusNative {
     }
 
     @JvmStatic
-    fun completeAction(context: Context, id: String) {
+    fun completeAction(context: Context, id: String, rawResult: String) {
         require(id.matches(Regex("^offline_[0-9a-fA-F-]{36}$"))) { "invalid action id" }
+        val result = JSONObject(rawResult)
+        require(result.keys().asSequence().toSet() == setOf("state", "receipt")) {
+            "unexpected execution result fields"
+        }
+        require(result.optString("state") == "approved") { "action is not committed" }
+        require(result.optString("receipt").startsWith("shadow://")) { "receipt is invalid" }
         val remaining = synchronized(lock) {
             val current = readActions(context)
             val next = JSONArray()
