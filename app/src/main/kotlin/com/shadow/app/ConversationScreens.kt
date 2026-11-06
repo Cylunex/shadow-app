@@ -30,6 +30,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.Color
 import com.shadow.bot.BotRole
 import com.shadow.bot.Attachment
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -56,7 +58,8 @@ import kotlinx.coroutines.launch
             leadingIcon = { Icon(Icons.Outlined.Search, null) },
             trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, "清空搜索") } },
             singleLine = true, shape = CircleShape, colors = OutlinedTextFieldDefaults.colors(
-                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                unfocusedBorderColor = Color.Transparent,
+                focusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
                 unfocusedContainerColor = MaterialTheme.colorScheme.surface,
                 focusedContainerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp))
@@ -67,7 +70,12 @@ import kotlinx.coroutines.launch
             Spacer(Modifier.weight(1f))
             IconButton(onClick = vm::refresh, enabled = !state.bot.busy) { Icon(Icons.Outlined.Refresh, "刷新会话") }
         }
-        if (state.bot.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
+        // Reserve the slot so even an explicit refresh never shifts the list.
+        Box(Modifier.fillMaxWidth().height(2.dp)) {
+            if (state.bot.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        if (state.bot.syncIssue != null) Text("连接暂时中断，正在重试", Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 24.dp)) {
             if (roles.isEmpty()) item {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 56.dp),
@@ -110,7 +118,7 @@ import kotlinx.coroutines.launch
                 draft.isNotBlank() -> "草稿 · $draft"
                 attachmentCount > 0 -> "草稿 · $attachmentCount 个附件"
                 else -> role.preview.ifBlank { "开始一段对话" }
-            }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
+            }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
                 color = if (draft.isNotBlank() || pending > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
             if (role.activeWorks > 0) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box(Modifier.size(5.dp).background(MaterialTheme.colorScheme.onSurfaceVariant, CircleShape))
@@ -141,12 +149,12 @@ import kotlinx.coroutines.launch
     }
     Column(Modifier.fillMaxSize()) {
         val ongoing = bot.works.count { it.isOngoing() }
-        Surface(onClick = { vm.navigate(Destination.Progress) }, color = MaterialTheme.colorScheme.surface,
+        if (ongoing > 0) Surface(onClick = { vm.navigate(Destination.Progress) }, color = MaterialTheme.colorScheme.background,
             shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-            Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.AutoMirrored.Outlined.List, null, Modifier.size(20.dp))
-                Text(if (ongoing > 0) "$ongoing 项进行中" else "事项与成果", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                Text("有 $ongoing 件事在继续", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
                 Text("查看", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, null, Modifier.size(18.dp))
             }
@@ -160,7 +168,7 @@ import kotlinx.coroutines.launch
                     style = MaterialTheme.typography.bodyMedium)
             }
             LazyColumn(Modifier.fillMaxSize(), state = scroll, reverseLayout = true,
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(pending.asReversed(), key = { "pending:${it.id}" }) { command ->
                     Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
                         MessageBubble(command.text, true, "${command.label} · 等待确认", command.attachments, vm)
@@ -239,22 +247,26 @@ import kotlinx.coroutines.launch
     val clipboard = LocalClipboardManager.current
     var actions by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        Column(Modifier.align(if (own) Alignment.TopEnd else Alignment.TopStart).widthIn(max = maxWidth * .90f),
+        Column(Modifier.align(if (own) Alignment.TopEnd else Alignment.TopStart).widthIn(max = maxWidth * if (own) .86f else 1f),
             horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
             attachments.forEach { attachment ->
                 AttachmentCard(attachment) { vm.previewAttachment(attachment) }
                 Spacer(Modifier.height(6.dp))
             }
-            if (text.isNotBlank()) Surface(shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomEnd = if (own) 6.dp else 22.dp,
-                bottomStart = if (own) 22.dp else 6.dp),
-                color = if (own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface) {
-                SelectionContainer { Text(text, Modifier.padding(horizontal = 16.dp, vertical = 13.dp), style = MaterialTheme.typography.bodyLarge) }
+            if (text.isNotBlank()) {
+                if (own) Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                    SelectionContainer { Text(text, Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp)) }
+                } else SelectionContainer {
+                    Text(text, Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 27.sp))
+                }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 36.dp)) {
                 Text(caption, Modifier.weight(1f, fill = false).padding(horizontal = 6.dp), style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .75f))
                 Box {
-                    IconButton(onClick = { actions = true }, modifier = Modifier.size(48.dp)) {
+                    IconButton(onClick = { actions = true }, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Outlined.MoreVert, "消息操作", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     DropdownMenu(actions, { actions = false }) {

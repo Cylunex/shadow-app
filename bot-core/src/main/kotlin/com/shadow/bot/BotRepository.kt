@@ -13,6 +13,7 @@ data class BotState(
     val pending: List<PendingCommand> = emptyList(), val capabilities: Set<String> = emptySet(),
     val workDetail: WorkDetail? = null, val artifactText: ArtifactText? = null,
     val busy: Boolean = false, val needsLogin: Boolean = false, val error: String? = null,
+    val syncIssue: String? = null,
 )
 
 /** Serializes user writes with snapshot/event refresh; cursors are never shared between contacts. */
@@ -30,41 +31,56 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         try { block() }
         catch (error: CancellationException) { throw error }
         catch (error: Exception) {
-            mutable.value = mutable.value.copy(error = when (error) {
+            val message = when (error) {
                 is ApiFailure -> error.message
                 is IllegalArgumentException -> error.message ?: "输入无效。"
                 else -> "连接中断，稍后可刷新；未确认的消息保留原编号重试。"
-            }, needsLogin = error is ApiFailure && error.status == 401)
+            }
+            val expired = error is ApiFailure && error.status == 401
+            mutable.value = if (silent && !expired) mutable.value.copy(syncIssue = "连接暂时中断，正在重试")
+                else mutable.value.copy(error = message, needsLogin = expired)
+
         } finally { if (!silent) mutable.value = mutable.value.copy(busy = false) }
     }
 
     private suspend fun refreshLocked(refreshDetails: Boolean = true) {
         val hello = api.handshake()
-        generation = hello.generation
-        val selected = mutable.value.selected?.takeIf { id -> hello.roles.any { it.id == id } }
-        mutable.value = mutable.value.copy(connected = true, needsLogin = false, roles = hello.roles,
-            capabilities = hello.capabilities, selected = selected,
-            messages = if (selected == null) emptyList() else mutable.value.messages,
-            works = if (selected == null) emptyList() else mutable.value.works)
+        val previous = mutable.value
+        val selected = previous.selected?.takeIf { id -> hello.roles.any { it.id == id } }
+        // Handshake has identities only. Do not publish its empty summaries while inbox loads.
+        var roles = hello.roles.map { role ->
+            previous.roles.find { it.id == role.id }?.let { old ->
+                role.copy(preview = old.preview, lastMessageAt = old.lastMessageAt, activeWorks = old.activeWorks)
+            } ?: role
+        }
+        var messages = if (selected == null) emptyList() else previous.messages
+        var works = if (selected == null) emptyList() else previous.works
+        var nextCursor = cursor
         if (selected == null && "inbox" in hello.capabilities) {
             val inbox = api.inbox()
             if (inbox.generation != hello.generation) { generation = null; throw ApiFailure(409, "服务正在重启，请刷新。") }
-            mutable.value = mutable.value.copy(roles = hello.roles.map { role ->
+            roles = hello.roles.map { role ->
                 val summary = inbox.items.find { it.entryId == role.id }
                 role.copy(preview = summary?.text.orEmpty(), lastMessageAt = summary?.at ?: 0, activeWorks = summary?.activeWorks ?: 0)
-            }.sortedByDescending { it.lastMessageAt })
+            }.sortedByDescending { it.lastMessageAt }
         }
         if (selected != null) {
             val snapshot = api.snapshot(selected)
             if (snapshot.generation != hello.generation) { generation = null; throw ApiFailure(409, "服务正在重启，请刷新后继续。") }
             check(snapshot.conversationId == hello.roles.first { it.id == selected }.conversationId)
-            cursor = snapshot.cursor
-            // Replacement is intentional: deleted/forgotten messages cannot survive a refresh.
-            mutable.value = mutable.value.copy(messages = snapshot.messages, works = snapshot.works.filter { it.entryId == selected })
-            if (refreshDetails) refreshWorkLocked()
+            nextCursor = snapshot.cursor
+            // Replace authoritative content, including withdrawals, in one publication.
+            messages = snapshot.messages
+            works = snapshot.works.filter { it.entryId == selected }
         }
+        generation = hello.generation
+        cursor = nextCursor
+        mutable.value = mutable.value.copy(connected = true, needsLogin = false, roles = roles,
+            capabilities = hello.capabilities, selected = selected, messages = messages, works = works, syncIssue = null)
+        if (selected == null) clearWorkLocked()
+        else if (refreshDetails) refreshWorkLocked()
     }
-    suspend fun refresh() = operation { refreshLocked() }
+    suspend fun refresh(silent: Boolean = false) = operation(silent = silent && mutable.value.connected) { refreshLocked() }
     suspend fun select(entryId: String?) = operation {
         require(entryId == null || mutable.value.roles.any { it.id == entryId })
         mutable.value = mutable.value.copy(selected = entryId, messages = emptyList(), works = emptyList())
@@ -74,10 +90,10 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     }
     suspend fun poll() = operation(silent = true) {
         if (mutable.value.needsLogin) return@operation
-        if (generation == null || mutable.value.selected == null) { refreshLocked(); return@operation }
+        if (generation == null || mutable.value.selected == null || mutable.value.syncIssue != null) { refreshLocked(); return@operation }
         val events = api.events(cursor)
         if (events.generation != generation || events.resetRequired || events.changed || events.hasMore) refreshLocked()
-        else cursor = events.cursor
+        else { cursor = events.cursor; mutable.value = mutable.value.copy(syncIssue = null) }
     }
     private fun persist(pending: List<PendingCommand>) {
         store.write(store.read().copy(pending = pending)) // disk commit precedes network and UI acknowledgement
@@ -129,20 +145,23 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun refreshWorkLocked() {
         val id = openWorkId ?: return
         val entryId = mutable.value.selected ?: return clearWorkLocked()
-        try {
-            val detail = api.work(id, entryId)
-            check(detail.work.entryId == entryId && detail.work.id == id)
-            mutable.value = mutable.value.copy(workDetail = detail)
-            openArtifactId?.let { artifactId ->
-                mutable.value = mutable.value.copy(artifactText = null)
-                val preview = api.artifact(artifactId, entryId)
-                check(preview.workId == id && preview.id == artifactId)
-                mutable.value = mutable.value.copy(artifactText = preview)
-            }
+        val detail = try {
+            api.work(id, entryId).also { check(it.work.entryId == entryId && it.work.id == id) }
         } catch (error: Exception) {
-            mutable.value = mutable.value.copy(workDetail = null, artifactText = null)
+            if (error is ApiFailure && error.status in setOf(401, 403, 404, 410))
+                mutable.value = mutable.value.copy(workDetail = null, artifactText = null)
             throw error
         }
+        val preview = try {
+            openArtifactId?.let { artifactId ->
+                api.artifact(artifactId, entryId).also { check(it.workId == id && it.id == artifactId) }
+            }
+        } catch (error: Exception) {
+            if (error is ApiFailure && error.status in setOf(401, 403, 404, 410))
+                mutable.value = mutable.value.copy(workDetail = detail, artifactText = null)
+            throw error
+        }
+        mutable.value = mutable.value.copy(workDetail = detail, artifactText = preview)
     }
     suspend fun openWork(id: String) = operation {
         require("workDetails" in mutable.value.capabilities) { "当前服务尚未开放事项详情。" }

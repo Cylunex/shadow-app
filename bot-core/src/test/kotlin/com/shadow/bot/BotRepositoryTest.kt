@@ -23,12 +23,22 @@ class BotRepositoryTest {
         var reads = 0
         var detail = WorkDetail(Work("work-one", "losna", "goal", "waiting", "result", "next", 1), emptyList(), emptyList(), emptyList(), setOf("work.resume", "work.cancel"), false, false)
         var failWork = false
-        override suspend fun inbox() = Inbox(generation, listOf(InboxItem("losna", "last exchange", 12, 2)))
+        var inboxError: Exception? = null
+        var artifactError: Exception? = null
+        var beforeInbox: () -> Unit = {}
+        var beforeArtifact: () -> Unit = {}
+        override suspend fun inbox(): Inbox {
+            beforeInbox(); inboxError?.let { throw it }
+            return Inbox(generation, listOf(InboxItem("losna", "last exchange", 12, 2)))
+        }
         override suspend fun work(id: String, entryId: String): WorkDetail {
             if (failWork) throw ApiFailure(404, "withdrawn")
             return detail
         }
-        override suspend fun artifact(id: String, entryId: String) = ArtifactText(id, detail.work.id, "report.txt", "report", false)
+        override suspend fun artifact(id: String, entryId: String): ArtifactText {
+            beforeArtifact(); artifactError?.let { throw it }
+            return ArtifactText(id, detail.work.id, "report.txt", "report", false)
+        }
         override suspend fun createRole(id: String, name: String) = id
         override suspend fun handshake(): Handshake {
             if (loginExpired) throw ApiFailure(401, "expired")
@@ -163,6 +173,42 @@ class BotRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) { readAttachmentBytes(byteArrayOf().inputStream()) }
         assertThrows(IllegalArgumentException::class.java) { readAttachmentBytes(ByteArray(20 * 1024 * 1024 + 1).inputStream()) }
         assertArrayEquals("original".toByteArray(), readAttachmentBytes("original".byteInputStream()))
+    }
+
+    @Test fun pollingNeverPublishesEmptyInboxSummariesOrDisablesInput() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh()
+        val before = repo.state.value
+        api.beforeInbox = {
+            assertEquals(before.roles, repo.state.value.roles)
+            assertFalse(repo.state.value.busy)
+        }
+        repeat(3) { repo.poll(); assertEquals(before, repo.state.value) }
+        repo.refresh(silent = true); assertEquals(before, repo.state.value)
+        api.inboxError = IOException("offline")
+        repo.poll()
+        assertEquals(before.roles, repo.state.value.roles)
+        assertNull(repo.state.value.error); assertNotNull(repo.state.value.syncIssue)
+        api.inboxError = null; repo.poll(); assertEquals(before, repo.state.value)
+        api.loginExpired = true; repo.poll(); assertTrue(repo.state.value.needsLogin)
+    }
+
+    @Test fun previewStaysVisibleDuringRefreshAndRetriesTransientFailures() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store())
+        api.detail = api.detail.copy(artifacts = listOf(Artifact("artifact", "report.txt", 6, "text/plain", true)))
+        repo.refresh(); repo.select("losna"); repo.openWork("work-one"); repo.previewArtifact("artifact")
+        val before = repo.state.value
+        api.beforeArtifact = {
+            assertEquals(before.artifactText, repo.state.value.artifactText)
+            assertFalse(repo.state.value.busy)
+        }
+        api.cursor++; repo.poll(); assertEquals(before, repo.state.value)
+        api.artifactError = IOException("offline"); api.cursor++; repo.poll()
+        assertEquals(before.artifactText, repo.state.value.artifactText)
+        assertEquals(before.workDetail, repo.state.value.workDetail)
+        assertNotNull(repo.state.value.syncIssue)
+        api.artifactError = null; repo.poll(); assertEquals(before, repo.state.value)
+        api.artifactError = ApiFailure(404, "withdrawn"); api.cursor++; repo.poll()
+        assertNull(repo.state.value.artifactText); assertEquals(before.workDetail, repo.state.value.workDetail)
     }
 
 }

@@ -106,7 +106,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun foreground(active: Boolean) {
         foreground = active
-        if (active && !mutable.value.connecting) { viewModelScope.launch { repository?.refresh() }; startPolling() }
+        if (active && !mutable.value.connecting) { viewModelScope.launch { repository?.refresh(silent = true) }; startPolling() }
         else { polling?.cancel(); polling = null; detailLoad?.cancel(); mutable.value = mutable.value.copy(memories = emptyList()) }
     }
     private fun startPolling() {

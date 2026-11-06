@@ -103,7 +103,17 @@ class MainActivity : ComponentActivity() {
     BackHandler(state.destination != Destination.Conversations && state.bot.connected) { back() }
     var menuOpen by remember(state.destination) { mutableStateOf(false) }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
-        TopAppBar(title = { Text(when (state.destination) {
+        TopAppBar(title = {
+            if (state.destination == Destination.Chat) Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                BotAvatar(role?.name ?: "S", role?.id.orEmpty(), 34.dp)
+                Column {
+                    Text(role?.name ?: "聊天", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (state.bot.syncIssue != null) "连接恢复后会自动更新" else "随时接着聊", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else Text(when (state.destination) {
             Destination.Conversations -> "Shadow"
             Destination.Chat -> role?.name ?: "聊天"
             Destination.Settings -> "连接设置"
