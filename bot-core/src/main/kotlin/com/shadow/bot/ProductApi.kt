@@ -17,6 +17,14 @@ import java.util.concurrent.TimeUnit
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
+    suspend fun enrollDevice(name: String): DeviceGrant = throw ApiFailure(503, "设备会话尚未启用。")
+    suspend fun devices(): List<BotDevice> = throw ApiFailure(503, "设备会话尚未启用。")
+    suspend fun revokeDevice(device: BotDevice) { throw ApiFailure(503, "设备会话尚未启用。") }
+    suspend fun pushConfig(): PushConfig = throw ApiFailure(503, "实时通知尚未启用。")
+    suspend fun configurePush(subscription: PushSubscription?, version: Long) { throw ApiFailure(503, "实时通知尚未启用。") }
+    suspend fun playback(entryId: String): Playback = throw ApiFailure(503, "伙伴音色尚未启用。")
+    suspend fun playbackCommand(state: Playback, action: String, messageId: String = state.messageId, positionMs: Int = state.positionMs, id: String = java.util.UUID.randomUUID().toString()): Playback = throw ApiFailure(503, "伙伴音色尚未启用。")
+    suspend fun playbackAudio(state: Playback): ByteArray = throw ApiFailure(503, "伙伴音色尚未启用。")
     suspend fun browserSessions(entryId: String): BrowserSessions = throw ApiFailure(503, "当前服务尚未开放手机浏览器接手。")
     suspend fun browser(entryId: String, generation: String, sessionId: String, version: Long, action: String,
         commandId: String? = null, ref: String? = null, text: String? = null): BrowserView = throw ApiFailure(503, "浏览器接手暂不可用。")
@@ -77,21 +85,49 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         }
         .retryOnConnectionFailure(false).connectTimeout(15, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
     private fun endpoint(path: String) = base.resolve("losna/agent/api/$path")!!
-    private suspend fun request(path: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun request(path: String, body: JSONObject? = null, timeout: Long = 30): JSONObject = withContext(Dispatchers.IO) {
         val builder = Request.Builder().url(endpoint(path)).header("Accept", "application/json")
         if (body != null) builder.header("X-Losna-Request", "1").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-        client.newCall(builder.build()).execute().use { response ->
+        client.newBuilder().callTimeout(timeout, TimeUnit.SECONDS).readTimeout(timeout, TimeUnit.SECONDS).build().newCall(builder.build()).execute().use { response ->
             if (!response.isSuccessful) throw ApiFailure(response.code, when (response.code) {
                 401 -> "登录已过期，请重新连接。"
                 403 -> "服务拒绝了当前请求，请检查入口配置。"
                 404 -> "内容已不可用，可能已被移除或遗忘。"
-                409 -> "事项已更新。请查看最新状态，再决定是否提交新的操作；原记录不会自动覆盖新版本。"
+                409 -> when {
+                    path.startsWith("speech") -> "播放已转移或更新，请重新读取。"
+                    path.startsWith("auth/devices") -> "设备状态已更新或数量已达上限，请刷新设备列表。"
+                    path == "push" -> "通知登记已更新，请重新连接推送服务。"
+                    else -> "事项已更新。请查看最新状态，再决定是否提交新的操作；原记录不会自动覆盖新版本。"
+                }
                 415 -> "此成果暂不支持文本预览。"
-                413 -> "消息过长，请缩短后发送。"
+                413 -> if (path == "speech") "这段回复较长，请使用手机朗读。" else "消息过长，请缩短后发送。"
                 else -> "服务暂时不可用（${response.code}）。"
             })
             if (response.body?.contentType()?.subtype != "json") throw IOException("地址未返回 Bot 数据，请检查 DSH 地址与代理前缀。")
             JSONObject(response.body!!.string())
+        }
+    }
+    override suspend fun enrollDevice(name: String): DeviceGrant = request("auth/devices", JSONObject().put("name", name)).let { DeviceGrant(it.getString("id"), it.getString("token"), it.getLong("expiresAt")) }
+    override suspend fun devices(): List<BotDevice> = request("auth/devices").getJSONArray("items").objects().map(::parseDevice)
+    override suspend fun revokeDevice(device: BotDevice) { request("auth/devices/revoke", JSONObject().put("id", device.id).put("revision", device.revision)) }
+    override suspend fun pushConfig(): PushConfig = request("push/config").let { PushConfig(it.getBoolean("enabled"), it.string("vapid").takeIf(String::isNotEmpty)) }
+    override suspend fun configurePush(subscription: PushSubscription?, version: Long) {
+        request("push", JSONObject().put("enabled", subscription != null).put("version", version).apply { subscription?.let {
+            put("endpoint", it.endpoint); put("keys", JSONObject().put("p256dh", it.publicKey).put("auth", it.auth))
+        } })
+    }
+    override suspend fun playback(entryId: String) = parsePlayback(request("speech?entryId=${encode(entryId)}", timeout = 5))
+    override suspend fun playbackCommand(state: Playback, action: String, messageId: String, positionMs: Int, id: String) = parsePlayback(request("speech",
+        JSONObject().put("entryId", state.entryId).put("generation", state.generation).put("revision", state.revision).put("id", id).put("action", action).put("messageId", messageId).put("positionMs", positionMs), timeout = if (action == "play") 70 else 5))
+    override suspend fun playbackAudio(state: Playback): ByteArray = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url(endpoint("speech/audio?entryId=${encode(state.entryId)}&audioId=${encode(state.audioId)}&revision=${state.revision}")).build()
+        client.newBuilder().callTimeout(5, TimeUnit.SECONDS).build().newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw ApiFailure(response.code, "播放已转移或过期，请重新读取。")
+            val body = requireNotNull(response.body)
+            require(body.contentLength() in 100..5 * 1024 * 1024 && body.contentType()?.toString() == "audio/mpeg")
+            val bytes = body.byteStream().use { it.readNBytes(5 * 1024 * 1024 + 1) }
+            require(bytes.size <= 5 * 1024 * 1024 && sha256(bytes) == response.header("x-shadow-sha256"))
+            bytes
         }
     }
     suspend fun nativeLoginConfig(): JSONObject = request("auth/native/config")
@@ -286,8 +322,9 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
             return url.newBuilder().encodedPath(url.encodedPath.trimEnd('/') + "/").build().toString()
         }
         fun from(session: Session, bearer: BearerTokens? = null): HttpProductApi {
-            require(session.oidc == null || bearer != null) { "统一登录需要有效的令牌提供方。" }
-            return HttpProductApi(normalizeBase(session.baseUrl).toHttpUrl(), if (bearer != null) emptyList() else session.cookies, bearer)
+            val effective = session.device?.let { device -> BearerTokens { device.token } } ?: bearer
+            require(session.oidc == null || effective != null) { "统一登录需要有效的令牌提供方。" }
+            return HttpProductApi(normalizeBase(session.baseUrl).toHttpUrl(), if (effective != null) emptyList() else session.cookies, effective)
         }
         // Only synthetic loopback test fixtures bypass the production HTTPS requirement.
         internal fun fixture(base: HttpUrl, bearer: BearerTokens? = null) = HttpProductApi(base, emptyList(), bearer)

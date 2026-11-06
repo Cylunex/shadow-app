@@ -10,7 +10,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 internal fun authenticatedApi(context: Context, store: StateStore, session: Session) =
-    HttpProductApi.from(session, session.oidc?.let { RefreshingBearerTokens(store, session) { raw -> freshTokens(context, raw) } })
+    HttpProductApi.from(session, session.oidc?.takeIf { session.device == null }?.let { RefreshingBearerTokens(store, session) { raw -> freshTokens(context, raw) } })
 
 private suspend fun freshTokens(context: Context, raw: String): FreshBearer {
     val state = runCatching { AuthState.jsonDeserialize(raw) }.getOrElse { throw ApiFailure(401, "请重新登录统一账号。") }
@@ -27,4 +27,11 @@ private suspend fun freshTokens(context: Context, raw: String): FreshBearer {
             }
         }
     } finally { service.dispose() }
+}
+
+/** Enrollment happens only as part of an explicit sign-in, never after a 401. */
+internal suspend fun enrollMobile(api: HttpProductApi, session: Session): Session {
+    if ("deviceSessions" !in api.handshake().capabilities) return session
+    val grant = api.enrollDevice(android.os.Build.MODEL.take(80).ifBlank { "Android" })
+    return session.copy(cookies = emptyList(), device = grant, oidc = session.oidc?.copy(authState = ""))
 }

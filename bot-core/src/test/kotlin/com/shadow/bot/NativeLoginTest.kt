@@ -12,6 +12,14 @@ class NativeLoginTest {
         override fun read() = value
         override fun write(state: SavedState) { value = state }
     }
+    @Test fun managedGrantRoundTripsWithoutUpstreamCredentialsOrIdentityLoss() {
+        val session = Session("https://example.com/", emptyList(), OidcSession("https://auth.example.com", "owner", "bot", "本人", ""), "connection", DeviceGrant("device", "synthetic-grant", 12345))
+        val saved = SavedState(session = session, drafts = mapOf("losna" to "synthetic draft"))
+        assertEquals(saved, StateCodec.decode(StateCodec.encode(saved)))
+        assertTrue(session.sameAccount(session.copy(device = null)))
+        assertTrue(StateCodec.encode(saved).contains("synthetic-grant")) // The enclosing SecureStateStore encrypts this document.
+    }
+
     @Test fun discoveryCannotMoveTheApiOrCallbackAndOldCookiesStillDecode() {
         val config = JSONObject().put("base_url", session.baseUrl).put("issuer", session.oidc!!.issuer).put("client_id", "bot")
             .put("resource", "https://example.com/dsh/losna/agent/api").put("redirect_uri", OIDC_REDIRECT)

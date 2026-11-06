@@ -16,6 +16,10 @@ await writeFile(join(root, 'config.json'), JSON.stringify({ version: 1, stateDir
   qq: { mode: 'disabled' }, general: { enabled: true }, memory: { autoLearn: false } }));
 const config = loadConfig(join(root, 'config.json'), {});
 if (['commitments','commitment-page'].includes(process.argv[4])) config.companionContinuity = { enabled: true };
+if (process.argv[4] === 'mobile') {
+  config.mobile = { enabled: true, voice: true };
+  config.voice = { ...config.voice, enabled: true, command: '/synthetic/unused' };
+}
 if (process.argv[4] === 'growth') config.companionBehavior = { enabled: true };
 let browserServer;
 if (process.argv[4] === 'browser') {
@@ -50,6 +54,7 @@ if (process.argv[3]) {
 }
 const store = new Store(join(root, 'state.sqlite'));
 const runtime = new Runtime({ store, memory: new Memory(store), config,
+  speech: process.argv[4] === 'mobile' ? () => ({ synthesize: async () => ({ bytes: Buffer.concat([Buffer.from('ID3'), Buffer.alloc(200)]), type: 'audio/mpeg' }) }) : undefined,
   driver: { availableTools: () => [], run: async (context, tools, _prompt, options) => {
     if (context.kind === 'chat') return { state: 'completed', text: 'synthetic Losna reply' };
     await mkdir(options.workspace.directory, { recursive: true });
@@ -81,6 +86,10 @@ if (process.argv[4] === 'commitment-page') {
   const seed=store.all('commitments')[0];
   for(let i=0;i<123;i++)store.put('commitments',{...seed,id:`browse-${i}`,goal:`合成持续目标 ${i}`,result:'完整结果 100% _ +'});
 }
+if (process.argv[4] === 'mobile') {
+  config.mobile = { enabled: true, voice: true };
+  config.voice = { ...config.voice, enabled: true, command: '/synthetic/unused' };
+}
 if (process.argv[4] === 'growth') {
   const now = Date.now(), persona = runtime.personas.resolve('losna');
   const source = store.put('sources', { id: 'growth-habit-source', person: 'owner', ...runtime.origin([], { entryId: 'losna' }),
@@ -108,8 +117,16 @@ if (process.argv[4] === 'memories') {
     runtime.memory.save('owner', { text: `合成茶饮偏好 ${n}`, kind: 'preference' }, [id]);
   }
 }
+let mobileHandler;
+if (process.argv[4] === 'mobile') {
+  store.put('outbox', { id: 'mobile-reply', person: 'owner', entryId: 'losna', sourceIds: [], state: 'sent', epoch: 0, text: 'synthetic spoken reply', sentAt: Date.now() });
+  const { installAdmin } = await moduleAt('src/admin.js');
+  installAdmin({ webServer: { register: route => { mobileHandler = route.handler; return () => {}; }, tapIndex: () => () => {} },
+    connection: { requestRejection: req => { if (req.headers.authorization === 'Bearer synthetic-owner') { delete req.headers.authorization; return null; } return 401; } } }, runtime, {});
+}
 const server = createServer(async (req, res) => {
   try {
+    if (mobileHandler) { await mobileHandler(req, res); return; }
     const url = new URL(req.url, 'http://localhost');
     if (!url.pathname.startsWith('/losna/agent/')) { res.writeHead(404); res.end(); return; }
     await handleProduct(runtime.product, req, res, url.pathname.slice('/losna'.length), url.searchParams);

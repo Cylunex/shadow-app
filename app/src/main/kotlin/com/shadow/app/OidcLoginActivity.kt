@@ -102,8 +102,7 @@ class OidcLoginActivity : Activity() {
                         val api = HttpProductApi.from(provisional, BearerTokens { requireNotNull(auth.accessToken) })
                         val identity = api.nativeIdentity()
                         check(identity.getString("issuer") == provisional.oidc!!.issuer && identity.getString("client_id") == expected.clientId && identity.getString("sub").isNotBlank())
-                        api.handshake()
-                        val session = provisional.copy(oidc = requireNotNull(provisional.oidc).copy(subject = identity.getString("sub"), name = identity.optString("name", "本人")))
+                        val session = enrollMobile(api, provisional.copy(oidc = requireNotNull(provisional.oidc).copy(subject = identity.getString("sub"), name = identity.optString("name", "本人"))))
                         var keepData = false
                         check(store.readPrivate("oidc-login")?.let(::JSONObject)?.optString("id") == attemptId)
                         store.update { current ->

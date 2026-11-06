@@ -62,7 +62,7 @@ data class ArtifactText(val id: String, val workId: String, val name: String, va
 data class PersonaCard(val id: String, val name: String, val displayName: String, val instructions: String, val inheritIdentity: Boolean)
 data class PersonaSettings(val entryId: String, val revision: Int, val active: String, val contactEnabled: Boolean, val cards: List<PersonaCard>)
 data class OidcSession(val issuer: String, val subject: String, val clientId: String, val name: String, val authState: String)
-data class Session(val baseUrl: String, val cookies: List<String>, val oidc: OidcSession? = null, val id: String = "")
+data class Session(val baseUrl: String, val cookies: List<String>, val oidc: OidcSession? = null, val id: String = "", val device: DeviceGrant? = null)
 fun Session.sameAccount(other: Session): Boolean = baseUrl == other.baseUrl &&
     (oidc == null && other.oidc == null || oidc != null && other.oidc != null && oidc.issuer == other.oidc.issuer && oidc.subject == other.oidc.subject)
 fun Session.canKeepData(other: Session): Boolean = sameAccount(other) || baseUrl == other.baseUrl && oidc == null && other.oidc != null
@@ -86,8 +86,9 @@ internal fun JSONObject.string(key: String) = if (isNull(key)) "" else optString
 
 object StateCodec {
     fun encode(state: SavedState): String = JSONObject().apply {
-        put("version", 6)
+        put("version", 7)
         state.session?.let { session -> put("session", JSONObject().put("baseUrl", session.baseUrl).put("cookies", JSONArray(session.cookies)).put("id", session.id).apply {
+            session.device?.let { put("device", JSONObject().put("id", it.id).put("token", it.token).put("expiresAt", it.expiresAt)) }
             session.oidc?.let { put("oidc", JSONObject().put("issuer", it.issuer).put("subject", it.subject).put("clientId", it.clientId).put("name", it.name).put("authState", it.authState)) }
         }) }
         put("pending", JSONArray(state.pending.map { JSONObject().put("id", it.id).put("entryId", it.entryId).put("text", it.text).put("createdAt", it.createdAt).put("action", it.action).put("workId", it.workId).put("expectedVersion", it.expectedVersion).put("memoryId", it.memoryId).put("commitmentId", it.commitmentId).put("attachments", JSONArray(it.attachments.map(::attachmentJson))) }))
@@ -100,12 +101,12 @@ object StateCodec {
     }.toString()
     fun decode(raw: String): SavedState {
         val json = JSONObject(raw)
-        require(json.getInt("version") in 1..6) { "本地资料版本不受支持" }
+        require(json.getInt("version") in 1..7) { "本地资料版本不受支持" }
         val session = json.optJSONObject("session")?.let { row ->
             val cookies = row.getJSONArray("cookies")
             Session(row.getString("baseUrl"), (0 until cookies.length()).map(cookies::getString), row.optJSONObject("oidc")?.let {
                 OidcSession(it.getString("issuer"), it.getString("subject"), it.getString("clientId"), it.getString("name"), it.getString("authState"))
-            }, row.optString("id", ""))
+            }, row.optString("id", ""), row.optJSONObject("device")?.let { DeviceGrant(it.getString("id"), it.getString("token"), it.getLong("expiresAt")) })
         }
         return SavedState(session, json.getJSONArray("pending").objects().map {
             PendingCommand(it.getString("id"), it.getString("entryId"), it.getString("text"), it.getLong("createdAt"), it.optString("action", "message"),

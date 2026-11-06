@@ -11,6 +11,31 @@ import java.util.concurrent.TimeUnit
 
 /** Exercises Kotlin DTOs against the actual Losna Product/Store/Conversation services. */
 class LosnaIntegrationTest {
+    @Test fun realMobileDeviceGrantPlaybackTakeoverAndRevocation() = runBlocking<Unit> {
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "mobile").redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val address = process.inputStream.bufferedReader().readLine().toHttpUrl()
+            val owner = HttpProductApi.fixture(address, BearerTokens { "synthetic-owner" })
+            assertTrue("deviceSessions" in owner.handshake().capabilities)
+            val a = owner.enrollDevice("Synthetic phone A"); val b = owner.enrollDevice("Synthetic phone B")
+            val first = HttpProductApi.fixture(address, BearerTokens { a.token }); val second = HttpProductApi.fixture(address, BearerTokens { b.token })
+            assertTrue(first.devices().first { it.id == a.id }.current)
+            try { first.enrollDevice("forbidden"); fail("managed credentials cannot enroll devices") } catch (error: ApiFailure) { assertEquals(403, error.status) }
+            val playing = first.playbackCommand(first.playback("losna"), "play", "mobile-reply")
+            assertEquals(203, first.playbackAudio(playing).size)
+            val progress = first.playbackCommand(playing, "progress", positionMs = 1800)
+            val takeover = second.playbackCommand(second.playback("losna"), "play", "mobile-reply")
+            assertEquals(playing.audioId, takeover.audioId); assertEquals(1800, takeover.positionMs)
+            try { first.playbackAudio(playing); fail("old owner cannot get audio") } catch (error: ApiFailure) { assertEquals(409, error.status) }
+            try { first.playbackCommand(progress, "pause", positionMs = 1900); fail("stale pause cannot stop new owner") } catch (error: ApiFailure) { assertEquals(409, error.status) }
+            val stopped = first.playbackCommand(first.playback("losna"), "interrupt")
+            assertEquals("paused", stopped.state)
+            second.revokeDevice(second.devices().first { it.id == a.id })
+            try { first.handshake(); fail("revoked token must fail") } catch (error: ApiFailure) { assertEquals(401, error.status) }
+            assertTrue(second.devices().first { it.id == b.id }.active)
+        } finally { process.outputStream.close(); if (!process.waitFor(10, TimeUnit.SECONDS)) process.destroyForcibly() }
+    }
+
     @Test fun createsCustomContactEditsPersonaChatsAndRecoversThroughRealProductHttp() = runBlocking {
         val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"))
             .redirectError(ProcessBuilder.Redirect.INHERIT).start()

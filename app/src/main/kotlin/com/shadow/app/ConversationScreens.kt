@@ -198,7 +198,7 @@ import kotlinx.coroutines.launch
                             Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp, bottom = 20.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                         MessageBubble(message.text, message.role == "user",
-                            listOf(if (message.role == "user") "" else message.personaName, messageTime(message.at)).filter(String::isNotBlank).joinToString(" · "), message.attachments, vm)
+                            listOf(if (message.role == "user") "" else message.personaName, messageTime(message.at)).filter(String::isNotBlank).joinToString(" · "), message.attachments, vm, message.id, "companionVoice" in state.bot.capabilities)
                     }
                 }
                 if (bot.historyCursor != null) item(key = "history-loader") {
@@ -269,7 +269,7 @@ import kotlinx.coroutines.launch
     }
 }
 
-@Composable private fun MessageBubble(text: String, own: Boolean, caption: String, attachments: List<Attachment>, vm: BotViewModel) {
+@Composable private fun MessageBubble(text: String, own: Boolean, caption: String, attachments: List<Attachment>, vm: BotViewModel, messageId: String? = null, companionVoice: Boolean = false) {
     val clipboard = LocalClipboardManager.current
     var actions by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -296,7 +296,9 @@ import kotlinx.coroutines.launch
                         Icon(Icons.Outlined.MoreVert, "消息操作", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     DropdownMenu(actions, { actions = false }) {
-                        if (!own && text.isNotBlank()) DropdownMenuItem(text = { Text("朗读") }, onClick = { actions = false; vm.speak(text) })
+                        if (!own && messageId != null && companionVoice) DropdownMenuItem(text = { Text("伙伴音色 · 播放或接续") }, onClick = { actions = false; vm.companionVoice(messageId) })
+                        if (!own && companionVoice) DropdownMenuItem(text = { Text("停止各设备伙伴语音") }, onClick = { actions = false; vm.interruptCompanionVoice() })
+                        if (!own && text.isNotBlank()) DropdownMenuItem(text = { Text("手机朗读") }, onClick = { actions = false; vm.speak(text) })
                         DropdownMenuItem(text = { Text("复制全文") }, onClick = { clipboard.setText(AnnotatedString(text.ifBlank { attachments.joinToString("\n") { it.name } })); actions = false })
                     }
                 }

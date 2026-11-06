@@ -14,11 +14,15 @@ import androidx.work.*
 import com.shadow.bot.sameAccount
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 internal object BackgroundChecks {
     private const val NAME = "bot-background-checks"
+    val ledgerLock = Mutex()
     @Volatile var foreground = false
     fun enabled(context: Context) = context.getSharedPreferences(NAME, Context.MODE_PRIVATE).getBoolean("enabled", false)
+    fun anyEnabled(context: Context) = enabled(context) || RealtimePush.enabled(context)
     fun configure(context: Context, enabled: Boolean) {
         context.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit().putBoolean("enabled", enabled).apply()
         val work = WorkManager.getInstance(context)
@@ -33,9 +37,10 @@ internal object BackgroundChecks {
 }
 
 class BotNotificationWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = BackgroundChecks.ledgerLock.withLock { checkInbox() }
+    private suspend fun checkInbox(): Result {
         val context = applicationContext
-        if (!BackgroundChecks.enabled(context)) return Result.success()
+        if (!BackgroundChecks.anyEnabled(context)) return Result.success()
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return Result.success()
         val store = SecureStateStore(context)
         val session = try { store.read().session } catch (_: Exception) { return Result.failure() } ?: return Result.success()
@@ -45,7 +50,7 @@ class BotNotificationWorker(context: Context, parameters: WorkerParameters) : Co
             val inbox = api.inbox()
             if (hello.generation != inbox.generation) return Result.retry()
             val ledger = store.readPrivate("notifications")?.let(::JSONObject) ?: JSONObject()
-            val sameServer = ledger.optString("server") == session.baseUrl && ledger.optLong("epoch", -1) == hello.memoryEpoch
+            val sameServer = ledger.optString("server") == session.baseUrl && ledger.optString("session") == session.id && ledger.optLong("epoch", -1) == hello.memoryEpoch
             val previous = if (sameServer) ledger.optJSONObject("entries") ?: JSONObject() else JSONObject()
             val readMarks = store.readPrivate("read-marks")?.let(::JSONObject)?.takeIf { it.optString("server") == session.baseUrl }?.optJSONObject("entries") ?: JSONObject()
             val next = JSONObject()
@@ -56,11 +61,11 @@ class BotNotificationWorker(context: Context, parameters: WorkerParameters) : Co
                 val old = previous.optJSONObject(item.entryId)
                 next.put(item.entryId, JSONObject().put("message", item.messageId).put("workSequence", item.workSequence))
                 val role = hello.roles.find { it.id == item.entryId } ?: continue
-                if (old == null || role.archived || BackgroundChecks.foreground) continue
+                if (old == null && !sameServer || role.archived || BackgroundChecks.foreground) continue
                 val read = readMarks.optJSONObject(item.entryId)
-                val kind = notificationKind(item, old.optString("message"), old.optLong("workSequence"), read?.optString("message"), read?.optLong("sequence") ?: 0) ?: continue
+                val kind = notificationKind(item, old?.optString("message").orEmpty(), old?.optLong("workSequence") ?: 0, read?.optString("message"), read?.optLong("sequence") ?: 0) ?: continue
                 // Recheck session and opt-in immediately before posting; never include private message text.
-                if (store.read().session?.let { it.id == session.id && it.sameAccount(session) } != true || !BackgroundChecks.enabled(context)) return Result.success()
+                if (store.read().session?.let { it.id == session.id && it.sameAccount(session) } != true || !BackgroundChecks.anyEnabled(context)) return Result.success()
                 val intent = Intent(context, MainActivity::class.java).putExtra("bot-entry", item.entryId)
                     .setAction("com.shadow.app.OPEN.${item.entryId}").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 val content = PendingIntent.getActivity(context, item.entryId.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -69,7 +74,7 @@ class BotNotificationWorker(context: Context, parameters: WorkerParameters) : Co
                     .setContentText(if (kind == "message") "伙伴有新回复，打开聊天查看。" else "事项有新进展，打开聊天查看。")
                     .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setAutoCancel(true).setOnlyAlertOnce(true).setContentIntent(content).build())
             }
-            if (store.read().session?.let { it.id == session.id && it.sameAccount(session) } == true && BackgroundChecks.enabled(context)) store.writePrivate("notifications", JSONObject().put("server", session.baseUrl).put("epoch", hello.memoryEpoch).put("entries", next).toString())
+            if (store.read().session?.let { it.id == session.id && it.sameAccount(session) } == true && BackgroundChecks.anyEnabled(context)) store.writePrivate("notifications", JSONObject().put("server", session.baseUrl).put("session", session.id).put("epoch", hello.memoryEpoch).put("entries", next).toString())
             Result.success()
         } catch (error: kotlinx.coroutines.CancellationException) { throw error }
         catch (error: com.shadow.bot.ApiFailure) {

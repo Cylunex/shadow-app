@@ -16,6 +16,7 @@ Android Kotlin / Compose；JDK 17、Android SDK 36。`app` 提供原生界面和
 
 ## 文档
 
+- [设备会话、实时通知与伙伴音色](docs/bot-mobile-sessions-push-voice.md)
 - [Bot / Agent 当前缺口核对](docs/bot-agent-current-audit.md)
 - [浏览器接手与持续事项检索](docs/bot-browser-handoff.md)
 - [手机持续事项与原工作接续](docs/bot-commitments.md)

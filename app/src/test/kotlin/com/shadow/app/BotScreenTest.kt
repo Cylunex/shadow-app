@@ -43,6 +43,16 @@ class BotScreenTest {
         }
     }
 
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun mobileDevicesRemainReadableAtNarrowWidth() {
+        val vm = model()
+        val device = BotDevice("synthetic", "合成的手机设备", true, true, now, now, now + 86400000, 1, "ready")
+        compose.setContent { BotTheme { androidx.compose.material3.Surface { androidx.compose.foundation.layout.Column { MobileSettings(ScreenState(bot = bot.copy(capabilities = bot.capabilities + setOf("deviceSessions", "realtimePush")), deviceManaged = true, devices = listOf(device)), vm) } } } }
+        compose.onNodeWithText("设备与实时通知").assertIsDisplayed()
+        compose.onNodeWithText("合成的手机设备 · 本机").assertIsDisplayed()
+        compose.onNodeWithText("撤销").assertIsDisplayed()
+        screenshot("mobile-devices-320")
+    }
+
     @Test fun contactsSupportSearchRecoveryAndDrafts() {
         val vm = model()
         compose.setContent { BotTheme { BotScreen(ScreenState(bot = bot, drafts = mapOf("creative" to "想试试一种新写法")), vm) } }

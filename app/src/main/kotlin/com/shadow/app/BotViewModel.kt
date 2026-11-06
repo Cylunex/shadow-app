@@ -38,7 +38,7 @@ data class ScreenState(val bot: BotState = BotState(), val destination: Destinat
     val commitmentDrafts: Map<String, String> = emptyMap(), val workOrigin: Destination = Destination.Progress,
     val persona: PersonaSettings? = null, val personaDraft: PersonaSettings? = null, val storageError: Boolean = false,
     val attachmentDrafts: Map<String, List<AttachmentDraft>> = emptyMap(), val sharedUris: List<String> = emptyList(),
-    val attachmentPreview: AttachmentPreviewData? = null, val attachmentLoading: Boolean = false, val speaking: Boolean = false)
+    val attachmentPreview: AttachmentPreviewData? = null, val attachmentLoading: Boolean = false, val speaking: Boolean = false, val devices: List<BotDevice> = emptyList(), val deviceManaged: Boolean = false, val deviceBusy: Boolean = false)
 
 class BotViewModel(application: Application) : AndroidViewModel(application) {
     private val store = SecureStateStore(application)
@@ -54,26 +54,79 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     private var personaImportTarget: Triple<Long, String, String>? = null
     private var personaExportTarget: Pair<Long, PersonaCard>? = null
     private var speech: DeviceSpeech? = null
+    private var companionPlayback: CompanionPlayback? = null
+    private var spokenMessage: String? = null
     private var spokenText: String? = null
     private var dictationEntry: String? = null
     private var dictationServer: String? = null
     fun beginDictation() { stopSpeaking(); dictationEntry = mutable.value.bot.selected; dictationServer = mutable.value.baseUrl }
     fun speak(text: String) {
         if (text.isBlank()) return
+        stopSpeaking()
         if (speech == null) speech = DeviceSpeech(getApplication()) { active, error ->
             mutable.value = mutable.value.copy(speaking = active, notice = error ?: mutable.value.notice)
         }
         spokenText = text
         speech?.speak(text)
     }
-    fun stopSpeaking() { spokenText = null; speech?.stop() }
+    fun companionVoice(messageId: String) {
+        val entry = mutable.value.bot.selected ?: return
+        val session = store.read().session ?: return
+        val grant = session.device ?: run { shareError("请重新连接，以启用设备会话和伙伴音色。"); return }
+        stopSpeaking(); spokenMessage = messageId
+        companionPlayback = CompanionPlayback(getApplication(), authenticatedApi(getApplication(), store, session), grant, viewModelScope) { active, error ->
+            mutable.value = mutable.value.copy(speaking = active, notice = error ?: mutable.value.notice)
+        }.also { it.play(entry, messageId) }
+    }
+    fun stopSpeaking() { spokenText = null; spokenMessage = null; speech?.stop(); companionPlayback?.stop(); companionPlayback = null }
+    fun interruptCompanionVoice() {
+        val entry = mutable.value.bot.selected ?: return
+        val session = store.read().session ?: return
+        stopSpeaking()
+        viewModelScope.launch { try {
+            val api = authenticatedApi(getApplication(), store, session)
+            val playback = api.playback(entry)
+            if (playback.state in setOf("playing", "preparing")) api.playbackCommand(playback, "interrupt")
+            if (store.read().session?.id == session.id) shareError("伙伴语音已停止。")
+        } catch (_: Exception) { if (store.read().session?.id == session.id) shareError("未能确认其他设备的播放状态，请稍后重试。") } }
+    }
+    fun loadDevices() {
+        if (mutable.value.deviceBusy) return
+        val session = store.read().session ?: return
+        viewModelScope.launch { try {
+            val devices = authenticatedApi(getApplication(), store, session).devices()
+            if (store.read().session?.id == session.id) mutable.value = mutable.value.copy(devices = devices)
+        } catch (cancel: CancellationException) { throw cancel } catch (error: Exception) { if (store.read().session?.id == session.id) shareError((error as? ApiFailure)?.message ?: "暂时无法读取设备。") } }
+    }
+    fun revokeDevice(device: BotDevice) {
+        if (mutable.value.deviceBusy || mutable.value.connecting) return
+        val session = store.read().session ?: return
+        mutable.value = mutable.value.copy(deviceBusy = true)
+        viewModelScope.launch { try {
+            authenticatedApi(getApplication(), store, session).revokeDevice(device)
+            if (store.read().session?.id == session.id) {
+                if (device.current) { stopSpeaking(); RealtimePush.disable(getApplication()); store.clearCache(); repository?.refresh() }
+                shareError(if (device.current) "本机设备会话已撤销，请重新登录。草稿与待发记录已保留。" else "已撤销该设备的 Bot 会话。")
+            }
+        } catch (cancel: CancellationException) { throw cancel } catch (error: Exception) { if (store.read().session?.id == session.id) shareError((error as? ApiFailure)?.message ?: "撤销结果未确认，请刷新设备列表核对。") }
+        finally { mutable.value = mutable.value.copy(deviceBusy = false) }
+        if (store.read().session?.id == session.id && !device.current) loadDevices()
+        }
+    }
+    fun enableRealtimePush(activity: android.app.Activity) {
+        val session = store.read().session ?: return
+        viewModelScope.launch { try {
+            val config = authenticatedApi(getApplication(), store, session).pushConfig()
+            if (store.read().session?.id == session.id) RealtimePush.enable(activity, session, config, ::shareError)
+        } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { shareError("实时通知尚不可用，请检查设备会话和服务设置。") } }
+    }
     fun dictate(text: String) {
         val entry = dictationEntry; dictationEntry = null
         if (entry == null || mutable.value.bot.selected != entry || dictationServer != mutable.value.baseUrl) { shareError("聊天已切换，请在原聊天重新输入语音。"); return }
         try { draft(SharedText.append(mutable.value.drafts[entry].orEmpty(), text)) }
         catch (_: IllegalArgumentException) { shareError("识别内容过长，请分段输入。"); }
     }
-    override fun onCleared() { speech?.close(); super.onCleared() }
+    override fun onCleared() { companionPlayback?.stop(); speech?.close(); super.onCleared() }
     private val uploads = mutableMapOf<String, Job>()
     private val uploadLimit = Semaphore(1)
     init {
@@ -87,18 +140,20 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: Exception) { mutable.value = mutable.value.copy(storageError = true, notice = "本地加密资料无法读取；原文件已保留，请恢复资料后重试。") }
     }
     private fun attach(api: HttpProductApi, baseUrl: String) {
+        stopSpeaking()
         val saved = store.read()
+        runCatching { RealtimePush.reconnect(getApplication()) }
         uploads.values.forEach { it.cancel() }; uploads.clear()
         polling?.cancel(); collector?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true)
         repository?.clearBrowser(close = true); repository?.clearCommitments(close = true)
         repository?.clearGrowth(close = true)
         val repo = BotRepository(api, store); repository = repo
-        mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, viewedWorkId = null, viewedArtifactId = null,
+        mutable.value = mutable.value.copy(bot = BotState(), deviceManaged = saved.session?.device != null, devices = emptyList(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, viewedWorkId = null, viewedArtifactId = null,
             drafts = saved.drafts, workDrafts = saved.workDrafts, commitmentDrafts = saved.commitmentDrafts,
             attachmentDrafts = saved.attachmentDrafts.mapValues { (_, drafts) -> drafts.map { if (it.uploaded != null) it else it.copy(status = "failed", error = "连接已恢复，请重试上传。") } },
             attachmentPreview = null)
         collector = viewModelScope.launch { repo.state.collect { bot ->
-            if (spokenText != null && bot.messages.none { it.text == spokenText }) stopSpeaking()
+            if (bot.needsLogin || spokenText != null && bot.messages.none { it.text == spokenText } || spokenMessage != null && bot.messages.none { it.id == spokenMessage && it.role == "assistant" }) stopSpeaking()
             val current = mutable.value.copy(bot = bot)
             mutable.value = current.copy(attachmentPreview = current.attachmentPreview?.takeIf { !bot.needsLogin && visibleAttachment(current, it.attachment.id, bot.selected) })
         } }
@@ -139,7 +194,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 require(previous.pending.isEmpty() || previous.session?.baseUrl == base && previous.session?.oidc == null) { "请先处理原连接的待发消息，再更换服务地址。" }
                 val api = HttpProductApi.from(Session(base, emptyList()))
                 api.login(token); api.handshake()
-                val session = api.session()
+                val session = enrollMobile(api, api.session())
                 var keepData = false
                 store.update { current ->
                     keepData = current.session?.canKeepData(session) == true
@@ -151,7 +206,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                     java.io.File(getApplication<Application>().cacheDir, "shared-results").deleteRecursively()
                 }
                 store.pruneDraftFiles()
-                attach(api, base)
+                attach(authenticatedApi(getApplication(), store, session), base)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { mutable.value = mutable.value.copy(notice = when(error) {
                 is ApiFailure, is IllegalArgumentException -> error.message
@@ -166,6 +221,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 mutable.value = mutable.value.copy(notice = "请先处理待发记录，再断开本机连接。")
                 return
             }
+            stopSpeaking(); RealtimePush.disable(getApplication())
             BackgroundChecks.configure(getApplication(), false)
             store.writePrivate("notifications", "{}")
             store.writePrivate("read-marks", "{}")
@@ -184,6 +240,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         foreground = active
         BackgroundChecks.foreground = active
         if (active && !mutable.value.connecting) {
+            runCatching { RealtimePush.reconnect(getApplication()) }
             viewModelScope.launch { repository?.refresh(silent = true) }
             if (mutable.value.destination == Destination.Memories) {
                 val browser = repository?.state?.value?.memoryBrowser
@@ -296,6 +353,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (destination == Destination.WorkDetail) viewModelScope.launch { repository?.closeArtifact() }
         if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) viewModelScope.launch { repository?.closeWork() }
         mutable.value = mutable.value.copy(destination = destination, notice = null, persona = null, personaDraft = null, attachmentPreview = null, attachmentLoading = false)
+        if (destination == Destination.Settings && "deviceSessions" in mutable.value.bot.capabilities) loadDevices()
         if (destination == Destination.Conversations) viewModelScope.launch { repository?.select(null) }
         repository?.clearMemories(close = true)
         if (destination == Destination.Memories) searchMemories("", "")

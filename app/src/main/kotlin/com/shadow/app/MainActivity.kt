@@ -245,6 +245,7 @@ class MainActivity : ComponentActivity() {
                 })
             }
         }
+        if ("deviceSessions" in state.bot.capabilities) item { MobileSettings(state, vm) }
         if (state.baseUrl.isNotBlank()) item { TextButton(onClick = vm::disconnect, enabled = !state.connecting && !state.bot.busy) { Text("断开本机连接") } }
         if (state.bot.pending.isNotEmpty()) item { Text("待确认消息", style = MaterialTheme.typography.titleMedium) }
         items(state.bot.pending, key = { it.id }) { pending ->
