@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "shadow-app"
 include(":app")
+include(":bot-core")

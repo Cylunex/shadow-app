@@ -1,48 +1,21 @@
-# Shadow App
+# Shadow
 
-Shadow App 是 Shadow 的 Android 原生运行壳。它默认把 Nexus 作为完整产品首页，而不是先展示
-一层应用入口；各领域仍拥有数据、规则和写入接口，App 负责统一会话、生命周期、分享入口与
-受限设备能力。
+连接 Losna / DSH 的个人 Bot，陪你聊天、记住共同经历，也一起把事情做好。
 
-## 理念
+首页是伙伴与会话列表，进入联系人即可聊天。支持添加自定义伙伴、编辑人格卡、查看事项进度和共享记忆。已有 Losna / doll 身份继续沿用，服务端统一承接对话、工作与记忆。
 
-- 一个连续的 Nexus 工作台，多个边界清晰的领域底座；
-- 业务和数据仍归各领域项目，Nexus 聚合信息与动作，壳负责交付、导航和设备适配；
-- 应用地址由受审查的 Platform Catalog 投影提供，不让用户手工填写；
-- 原生桥按主 frame、Origin、模块路径、文档 nonce、一次性请求与 capability 授权，默认不给普通网页设备权限。
+## 开发
 
-## 主要功能
+Android Kotlin / Compose；JDK 17、Android SDK 36。`app` 提供原生界面和本地加密存储，`bot-core` 提供独立可测的协议与同步逻辑。
 
-- 启动后直接进入 Nexus 统一工作台；原生底部导航可直达应用中心、Health 和设备设置；
-- Nexus 数据面板聚合领域指标，并在首页直接呈现领域声明的高频动作；
-- Health 称重、睡眠、心情和 Ledger 支出、收入可在 Nexus 内完成，不必先进入领域页面；
-- Platform Notifications 部署后的统一收件箱入口；
-- 统一 WebView 会话、文件上传下载和外链处理；Nexus 页面接管完整产品导航，领域页面仍显示
-  原生返回工具栏；
-- 模块级规范入口/备用入口切换；
-- 中央称重主操作，以及 Health 体脂秤、三星健康、提醒与离线队列适配；
-- Android 16 与三星设备系统栏适配。
-- Android 系统分享文本、链接和单个文件到 Nexus；只预填当前会话，用户确认后才进入处理流程。
-- Nexus 去敏简报可交给壳显示原生通知，按稳定 brief id 去重并尊重静默时间；
-- Nexus 快捷动作断网时进入 Android Keystore AES-GCM 加密队列，恢复后仍走领域校验、风险策略、
-  幂等和回执链路，成功前不会移除。
-
-## 本地开发
-
-需要 JDK 17 和 Android SDK。正式开发使用 Platform 编译后的 App 投影；旧版逐模块模板仅供
-兼容：
-
-```bash
-SHADOW_APP_RUNTIME_FILE=/path/to/shadow-app-runtime.json \
-  JAVA_HOME=/path/to/jdk17 ./gradlew --no-daemon validateModules testDebugUnitTest
+```sh
+./gradlew :bot-core:test :app:compileDebugKotlin :app:lintDebug
 ```
 
-实际域名、端口和签名材料只放在被忽略的本地配置或仓库外运维目录。
+在连接设置中填写 DSH 根地址（含代理前缀）和当前启动口令。实际地址、凭据、签名资料不写入仓库。
 
 ## 文档
 
-- [模块接入规范](docs/module-integration.md)
-- [品牌规范](docs/brand.md)
-- [模块清单 Schema](docs/module.schema.json)
-
-- [统一鉴权、Agent 与 Nexus 接入设计（目标方案，尚未实现）](docs/nexus-integration-design.md)
+- [初期方案与实现顺序](docs/initial-bot-plan.md)
+- [协议与开发验证](docs/protocol-and-testing.md)
+- [本轮交付与未完成项](docs/implementation-status.md)

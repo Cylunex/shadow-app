@@ -19,3 +19,9 @@ app/libs/*.aar
 deploy/
 ops/
 operations/
+.kotlin/
+# Preserve legacy local SDK/configuration without loading it into the Bot build.
+config/*.local.*
+config/*.json
+app/libs/*.aar
+*.hprof
