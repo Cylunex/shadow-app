@@ -53,4 +53,14 @@ class UiPresentationTest {
         assertEquals("work", notificationKind(item.copy(messageRole = "user"), "old", 10, "old", 10))
         assertNull(notificationKind(item, "new-reply", 20, "old", 10))
     }
+    @Test fun searchHighlightIsLiteralCaseInsensitiveAndBounded() {
+        val style = androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+        val text = "A.* a.* 中文🙂"
+        val result = highlightedMessage(text, "a.*", style)
+        assertEquals(text, result.text)
+        assertEquals(listOf(0 to 3, 4 to 7), result.spanStyles.map { it.start to it.end })
+        assertTrue(highlightedMessage(text, "", style).spanStyles.isEmpty())
+        assertEquals(500, highlightedMessage("a".repeat(1000), "a", style).spanStyles.size)
+    }
+
 }

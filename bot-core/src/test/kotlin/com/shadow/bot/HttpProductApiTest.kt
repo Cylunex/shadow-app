@@ -84,4 +84,16 @@ class HttpProductApiTest {
             try { api.artifactContent(empty, "losna"); fail("withdrawn") } catch (error: ApiFailure) { assertEquals(404, error.status) }
         }
     }
+    @Test fun contextEncodesAnchorAndDirectionWithoutChangingMessageIdentity() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"generation":"host","entryId":"doll","epoch":7,"anchor":{"id":"a+/中文","role":"user"},"before":null,"after":"next","items":[{"id":"a+/中文","role":"user","text":"上下文","at":3}]}"""))
+            val page = HttpProductApi.fixture(server.url("/dsh/")).messageContext("doll", MessageRef("a+/中文", "user"), 7, before = "opaque+/=", limit = 5)
+            val request = server.takeRequest(); val url = request.requestUrl!!
+            assertEquals("/dsh/losna/agent/api/message-context", url.encodedPath)
+            assertEquals("a+/中文", url.queryParameter("id")); assertEquals("opaque+/=", url.queryParameter("before"))
+            assertNull(url.queryParameter("after")); assertEquals("7", url.queryParameter("epoch")); assertEquals("5", url.queryParameter("limit"))
+            assertEquals(page.anchor.id, page.items.single().id); assertEquals("next", page.after); assertNull(page.before)
+        }
+    }
+
 }

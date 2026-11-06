@@ -15,6 +15,7 @@ data class BotState(
     val busy: Boolean = false, val needsLogin: Boolean = false, val error: String? = null,
     val syncIssue: String? = null, val offline: Boolean = false, val cachedAt: Long = 0, val historyCursor: String? = null, val historyBusy: Boolean = false,
     val liveReply: LiveReply? = null, val searchQuery: String = "", val searchResults: List<Message> = emptyList(), val searchCursor: String? = null, val searchDone: Boolean = false,
+    val messageContext: MessageContextPage? = null, val contextBusy: Boolean = false, val contextError: String? = null,
 )
 
 /** Serializes user writes with snapshot/event refresh; cursors are never shared between contacts. */
@@ -29,6 +30,51 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private var olderCursor: String? = null
     private var openWorkId: String? = null
     private var openArtifactId: String? = null
+    private var contextRequest = 0L
+
+    fun clearMessageContext() {
+        contextRequest++
+        mutable.value = mutable.value.copy(messageContext = null, contextBusy = false, contextError = null)
+    }
+
+    suspend fun openMessageContext(anchor: MessageRef) {
+        clearMessageContext()
+        val request = contextRequest
+        val entry = mutable.value.selected ?: return
+        contextPage(entry, anchor, request)
+    }
+    suspend fun moreMessageContext(older: Boolean) {
+        val page = mutable.value.messageContext ?: return
+        if (page.items.size >= 600) return
+        val position = (if (older) page.before else page.after) ?: return
+        contextPage(page.entryId, page.anchor, contextRequest, if (older) position else null, if (older) null else position)
+    }
+    private suspend fun contextPage(entry: String, anchor: MessageRef, request: Long, before: String? = null, after: String? = null) = operation {
+        if (request != contextRequest || entry != mutable.value.selected) return@operation
+        require("messageContext" in mutable.value.capabilities) { "当前服务尚未开放消息定位。" }
+        mutable.value = mutable.value.copy(contextBusy = true, contextError = null)
+        try {
+            val old = mutable.value.messageContext
+            if (old != null && old.items.size >= 600) return@operation
+            val page = api.messageContext(entry, anchor, memoryEpoch, before, after, minOf(30, 600 - (old?.items?.size ?: 0)))
+            if (request != contextRequest || entry != mutable.value.selected) return@operation
+            check(page.entryId == entry && page.anchor == anchor)
+            if (page.generation != generation || page.epoch != memoryEpoch) throw ApiFailure(409, "历史已更新，请重新搜索。")
+            val items = when {
+                before != null -> page.items + old?.items.orEmpty()
+                after != null -> old?.items.orEmpty() + page.items
+                else -> page.items
+            }.distinctBy { it.role to it.id }
+            mutable.value = mutable.value.copy(messageContext = page.copy(items = items,
+                before = if (after != null) old?.before else page.before, after = if (before != null) old?.after else page.after))
+        } catch (error: ApiFailure) {
+            if (request != contextRequest && error.status !in setOf(401, 403)) return@operation
+            if (error.status in setOf(404, 409)) {
+                mutable.value = mutable.value.copy(messageContext = null, contextError = "原消息或历史内容已更新，请返回重新搜索。",
+                    searchResults = emptyList(), searchCursor = null, searchDone = false)
+            } else throw error
+        } finally { if (request == contextRequest) mutable.value = mutable.value.copy(contextBusy = false) }
+    }
 
     private suspend fun operation(silent: Boolean = false, block: suspend () -> Unit) = mutex.withLock {
         if (!silent) mutable.value = mutable.value.copy(busy = true, error = null)
@@ -43,6 +89,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             mutable.value = mutable.value.copy(liveReply = null)
             val expired = error is ApiFailure && error.status == 401
             if (error is ApiFailure && error.status in setOf(401, 403)) {
+                clearMessageContext()
                 store.clearCache(); olderMessages = emptyList(); olderCursor = null
                 mutable.value = mutable.value.copy(messages = emptyList(), roles = emptyList(), works = emptyList(), searchResults = emptyList(), searchCursor = null, historyCursor = null, workDetail = null, artifactText = null)
             } else if (error !is ApiFailure && error !is IllegalArgumentException) {
@@ -59,8 +106,13 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
 
     private suspend fun refreshLocked(refreshDetails: Boolean = true) {
         val hello = api.handshake()
+        if (generation != null && generation != hello.generation) {
+            clearMessageContext()
+            mutable.value = mutable.value.copy(searchResults = emptyList(), searchCursor = null, searchDone = false)
+        }
         val cache = store.readCache()
         if (cache != null && cache.epoch != hello.memoryEpoch || memoryEpoch >= 0 && memoryEpoch != hello.memoryEpoch) {
+            clearMessageContext()
             store.clearCache(); olderMessages = emptyList(); olderCursor = null
             mutable.value = mutable.value.copy(messages = emptyList(), roles = mutable.value.roles.map { it.copy(preview = "") }, works = emptyList(), searchResults = emptyList(), searchCursor = null, searchDone = false, workDetail = null, artifactText = null, liveReply = null)
         }
@@ -90,6 +142,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             nextCursor = snapshot.cursor
             // Replace authoritative content, including withdrawals, in one publication.
             if (memoryEpoch != snapshot.memoryEpoch || generation != hello.generation) {
+                clearMessageContext()
                 olderMessages = emptyList(); olderCursor = snapshot.historyCursor
                 mutable.value = mutable.value.copy(liveReply = null)
                 mutable.value = mutable.value.copy(searchResults = emptyList(), searchCursor = null, searchDone = false)
@@ -105,6 +158,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         cursor = nextCursor
         mutable.value = mutable.value.copy(connected = true, needsLogin = false, roles = roles,
             capabilities = hello.capabilities, selected = selected, messages = messages, works = works, historyCursor = olderCursor, syncIssue = null, offline = false, cachedAt = 0)
+        if (selected == null || "messageContext" !in hello.capabilities) clearMessageContext()
         runCatching {
             val server = store.read().session?.baseUrl
             if (server != null) {
@@ -118,6 +172,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     }
     suspend fun refresh(silent: Boolean = false) = operation(silent = silent && mutable.value.connected) { refreshLocked() }
     suspend fun select(entryId: String?) = operation {
+        clearMessageContext()
         require(entryId == null || mutable.value.roles.any { it.id == entryId })
         mutable.value = mutable.value.copy(selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null)
         cursor = 0; memoryEpoch = -1; olderMessages = emptyList(); olderCursor = null
@@ -162,11 +217,20 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         require(query.isNotBlank() && query.length <= 200) { "请输入 1–200 字的搜索词。" }
         val before = if (more && mutable.value.searchQuery == query) mutable.value.searchCursor ?: return@operation else null
         if (before == null) mutable.value = mutable.value.copy(searchQuery = query, searchResults = emptyList(), searchCursor = null, searchDone = false)
-        val page = api.history(entry, before, query)
-        check(page.entryId == entry && page.query == query.trim())
-        if (page.generation != generation || page.epoch != memoryEpoch) { refreshLocked(); throw ApiFailure(409, "历史已更新，请重新搜索。") }
-        mutable.value = mutable.value.copy(searchResults = (mutable.value.searchResults + page.items.asReversed()).distinctBy { it.role to it.id },
-            searchCursor = page.next, searchDone = true)
+        try {
+            val page = api.history(entry, before, query)
+            check(page.entryId == entry && page.query == query.trim())
+            if (page.generation != generation || page.epoch != memoryEpoch) throw ApiFailure(409, "历史已更新，请重新搜索。")
+            mutable.value = mutable.value.copy(searchResults = (mutable.value.searchResults + page.items.asReversed()).distinctBy { it.role to it.id },
+                searchCursor = page.next, searchDone = true)
+        } catch (error: ApiFailure) {
+            if (error.status == 409) {
+                clearMessageContext()
+                mutable.value = mutable.value.copy(searchResults = emptyList(), searchCursor = null, searchDone = false)
+                refreshLocked()
+            }
+            throw error
+        }
     }
     suspend fun artifactContent(artifact: Artifact, entryId: String) = api.artifactContent(artifact, entryId)
     fun clearLiveReply() { mutable.value = mutable.value.copy(liveReply = null) }
@@ -278,6 +342,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun <T> guardedRead(block: suspend () -> T): T = mutex.withLock {
         try { block() } catch (error: ApiFailure) {
             if (error.status in setOf(401, 403)) {
+                clearMessageContext()
                 store.clearCache(); olderMessages = emptyList(); olderCursor = null
                 mutable.value = mutable.value.copy(needsLogin = error.status == 401, messages = emptyList(), roles = emptyList(), works = emptyList(),
                     searchResults = emptyList(), liveReply = null, workDetail = null, artifactText = null, error = error.message)

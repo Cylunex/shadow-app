@@ -19,6 +19,7 @@ sealed interface Destination {
     data object CreateRole : Destination
     data object Chat : Destination
     data object Search : Destination
+    data object MessageContext : Destination
     data object WorkDetail : Destination
     data object ArtifactPreview : Destination
     data object Progress : Destination
@@ -167,6 +168,15 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun loadHistory() { viewModelScope.launch { repository?.loadHistory() } }
+    fun openMessageContext(message: Message) {
+        navigate(Destination.MessageContext)
+        viewModelScope.launch { repository?.openMessageContext(MessageRef(message.id, message.role)) }
+    }
+    fun moreMessageContext(older: Boolean) { viewModelScope.launch { repository?.moreMessageContext(older) } }
+    fun resetMessageContext() {
+        val anchor = mutable.value.bot.messageContext?.anchor ?: return
+        viewModelScope.launch { repository?.openMessageContext(anchor) }
+    }
     fun searchMessages(query: String, more: Boolean = false) { viewModelScope.launch { repository?.searchMessages(query.trim(), more) } }
     fun refresh() { if (mutable.value.connecting) return; viewModelScope.launch { repository?.refresh() } }
     fun openNotification(entry: String) {
@@ -234,6 +244,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (mutable.value.connecting) return
         detailLoad?.cancel()
         personaEditorEpoch++
+        if (destination != Destination.MessageContext) repository?.clearMessageContext()
         if (destination == Destination.WorkDetail) viewModelScope.launch { repository?.closeArtifact() }
         if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) viewModelScope.launch { repository?.closeWork() }
         mutable.value = mutable.value.copy(destination = destination, notice = null, persona = null, personaDraft = null, memories = emptyList(), memoryDetail = null, attachmentPreview = null, attachmentLoading = false)

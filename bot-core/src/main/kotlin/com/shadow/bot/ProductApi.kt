@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
+    suspend fun messageContext(entryId: String, anchor: MessageRef, epoch: Long, before: String? = null, after: String? = null, limit: Int = 30): MessageContextPage = throw ApiFailure(503, "当前服务尚未开放消息定位。")
     suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment = throw ApiFailure(503, "附件上传暂不可用。")
     suspend fun attachmentContent(attachment: Attachment, entryId: String): ByteArray = throw ApiFailure(503, "附件暂不可用。")
     suspend fun live(entryId: String): LiveReplyState = throw ApiFailure(503, "当前服务尚未开放生成预览。")
@@ -95,6 +96,13 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         val row = request("history?entryId=${encode(entryId)}&query=${encode(query)}" + (before?.let { "&before=${encode(it)}" } ?: ""))
         return MessagePage(row.getString("generation"), row.getString("entryId"), row.getLong("epoch"), row.getString("query"),
             row.getJSONArray("items").objects().map(::parseMessage), row.string("next").takeIf(String::isNotEmpty))
+    }
+    override suspend fun messageContext(entryId: String, anchor: MessageRef, epoch: Long, before: String?, after: String?, limit: Int): MessageContextPage {
+        val row = request("message-context?entryId=${encode(entryId)}&id=${encode(anchor.id)}&role=${encode(anchor.role)}&epoch=$epoch&limit=$limit" +
+            (before?.let { "&before=${encode(it)}" } ?: "") + (after?.let { "&after=${encode(it)}" } ?: ""))
+        val ref = row.getJSONObject("anchor")
+        return MessageContextPage(row.getString("generation"), row.getString("entryId"), row.getLong("epoch"), MessageRef(ref.getString("id"), ref.getString("role")),
+            row.getJSONArray("items").objects().map(::parseMessage), row.string("before").takeIf(String::isNotEmpty), row.string("after").takeIf(String::isNotEmpty))
     }
     override suspend fun artifactContent(artifact: Artifact, entryId: String): ByteArray = withContext(Dispatchers.IO) {
         require(artifact.downloadable && artifact.size in 0..20L * 1024 * 1024 && Regex("[a-f0-9]{64}").matches(artifact.sha256))

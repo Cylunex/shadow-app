@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -92,9 +93,12 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun BotScreen(state: ScreenState, vm: BotViewModel) {
+    val searchListState = rememberLazyListState()
+    LaunchedEffect(state.bot.selected, state.bot.searchQuery) { searchListState.scrollToItem(0) }
     val role = state.bot.roles.find { it.id == state.bot.selected }
     val back = {
         vm.navigate(when (state.destination) {
+            Destination.MessageContext -> Destination.Search
             Destination.WorkDetail -> Destination.Progress
             Destination.ArtifactPreview -> Destination.WorkDetail
             Destination.Search, Destination.Progress, Destination.Persona, Destination.Memories, Destination.AttachmentPreview -> Destination.Chat
@@ -118,6 +122,7 @@ class MainActivity : ComponentActivity() {
             Destination.Conversations -> "Shadow"
             Destination.Chat -> role?.name ?: "聊天"
             Destination.Search -> "搜索聊天记录"
+            Destination.MessageContext -> "消息前后文"
             Destination.Settings -> "连接设置"
             Destination.CreateRole -> "新的伙伴"
             Destination.Progress -> "事项与成果"
@@ -164,7 +169,8 @@ class MainActivity : ComponentActivity() {
                 Destination.Progress -> Progress(state.bot, vm)
                 Destination.WorkDetail -> WorkDetailScreen(state, vm)
                 Destination.ArtifactPreview -> ArtifactScreen(state)
-                Destination.Search -> MessageSearchScreen(state, vm)
+                Destination.Search -> MessageSearchScreen(state, vm, searchListState)
+                Destination.MessageContext -> MessageContextScreen(state, vm)
                 Destination.AttachmentPreview -> AttachmentPreviewScreen(state, vm)
                 Destination.Memories -> MemoryScreen(state, vm)
                 Destination.Persona -> PersonaEditor(state, vm)

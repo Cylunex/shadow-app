@@ -50,6 +50,13 @@ class LosnaIntegrationTest {
             assertTrue(api.memories().isEmpty())
             val results = api.history(id, query = "synthetic conversation")
             assertEquals(receipt, results.items.single().id)
+            assertTrue("messageContext" in api.handshake().capabilities)
+            val context = api.messageContext(id, MessageRef(receipt, "user"), results.epoch)
+            assertEquals(id, context.entryId)
+            assertTrue(context.items.any { it.id == receipt && it.role == "user" })
+            assertTrue(context.items.any { it.role == "assistant" })
+            try { api.messageContext("losna", MessageRef(receipt, "user"), results.epoch); fail("cross-contact context") }
+            catch (error: ApiFailure) { assertEquals(404, error.status) }
             val role = api.handshake().roles.first { it.id == id }
             api.saveContact(role, true)
             assertTrue(api.handshake().roles.first { it.id == id }.archived)

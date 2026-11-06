@@ -1,6 +1,6 @@
 # 协议与开发验证
 
-2026-11-06 增量：当前源码 0.8.0（18），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)。
+2026-11-06 增量：当前源码 0.10.0（20），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)、[人格卡文件](bot-persona-files.md)与[历史定位](bot-history-context.md)。
 
 ## 工程
 
@@ -19,6 +19,7 @@
 | GET handshake | 协议版本、代次、能力、联系人与会话 ID |
 | GET snapshot?entryId=… | 最近 200 条消息和真实事项状态；entryWorks 按入口先过滤再取最近 100 项 |
 | GET history?entryId=…&before=…&query=… | 按入口和 memory epoch 分页／搜索有效历史 |
+| GET message-context?entryId=…&id=…&role=…&epoch=… | 定位可见原消息，before／after 双向分页；详见历史定位说明 |
 | GET live?entryId=… | 当前临时生成正文，非正式聊天记录 |
 | GET artifact-content/{id}?entryId=… | 校验入口、来源和快照的原件下载 |
 | GET memory/{id} | 有效记忆、当前版本和来源片段 |

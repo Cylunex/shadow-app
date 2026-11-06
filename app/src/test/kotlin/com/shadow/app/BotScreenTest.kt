@@ -182,4 +182,38 @@ class BotScreenTest {
         assertEquals(original, saved)
     }
 
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun contextLocatesAnchorAndPrependingPreservesReadingPosition() {
+        val rows = (1..40).map { Message("$it", "user", "历史消息 $it：周末一起阅读。", now + it) }
+        val page = mutableStateOf(MessageContextPage("host", "assistant", 0, MessageRef("20", "user"), rows, "older", "newer"))
+        compose.setContent { BotTheme { androidx.compose.material3.Surface {
+            MessageContextView(page.value, "阅读", false, false, {}, {})
+        } } }
+        compose.onNodeWithText(rows[19].text).assertIsDisplayed()
+        screenshot("history-context-320")
+        val list = compose.onNode(hasScrollToIndexAction())
+        list.performScrollToIndex(25)
+        compose.onNodeWithText(rows[24].text).assertIsDisplayed()
+        compose.runOnIdle { page.value = page.value.copy(items = (1..10).map { Message("old$it", "user", "更早消息 $it", now - it) } + rows) }
+        compose.onNodeWithText(rows[24].text).assertIsDisplayed()
+        compose.onNodeWithText("定位消息", substring = false).performClick()
+        compose.onNodeWithText(rows[19].text).assertIsDisplayed()
+    }
+
+    @Test fun returningFromContextPreservesSearchScrollPosition() {
+        val rows = (1..40).map { Message("$it", "user", "搜索结果 $it：周末阅读。", now + it) }
+        val vm = model()
+        val state = mutableStateOf(ScreenState(bot = bot.copy(selected = "assistant", searchQuery = "阅读", searchDone = true,
+            searchResults = rows, capabilities = bot.capabilities + "messageContext"), destination = Destination.Search))
+        compose.setContent { BotTheme { BotScreen(state.value, vm) } }
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(20)
+        compose.onNodeWithText(rows[20].text).assertIsDisplayed()
+        screenshot("history-search-context-393")
+        compose.runOnIdle { state.value = state.value.copy(destination = Destination.MessageContext, bot = state.value.bot.copy(
+            messageContext = MessageContextPage("host", "assistant", 0, MessageRef("21", "user"), rows, null, null))) }
+        compose.onNodeWithText(rows[20].text).assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(destination = Destination.Search, bot = state.value.bot.copy(messageContext = null)) }
+        compose.onNodeWithText(rows[20].text).assertIsDisplayed()
+        compose.onNodeWithText(rows[0].text).assertDoesNotExist()
+    }
+
 }

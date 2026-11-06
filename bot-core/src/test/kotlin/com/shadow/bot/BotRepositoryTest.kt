@@ -1,6 +1,8 @@
 package com.shadow.bot
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.IOException
@@ -23,7 +25,17 @@ class BotRepositoryTest {
         var epoch = 0L
         var historyCursor: String? = null
         val pages = java.util.ArrayDeque<MessagePage>()
-        override suspend fun history(entryId: String, before: String?, query: String): MessagePage = pages.removeFirst()
+        var historyError: Exception? = null
+        val contexts = java.util.ArrayDeque<MessageContextPage>()
+        var contextError: Exception? = null
+        var beforeContext: suspend () -> Unit = {}
+        val contextPositions = mutableListOf<Pair<String?, String?>>()
+        override suspend fun messageContext(entryId: String, anchor: MessageRef, epoch: Long, before: String?, after: String?, limit: Int): MessageContextPage {
+            contextPositions.add(before to after); beforeContext()
+            contextError?.let { throw it }
+            return contexts.removeFirst()
+        }
+        override suspend fun history(entryId: String, before: String?, query: String): MessagePage { historyError?.let { throw it }; return pages.removeFirst() }
         var rows = mutableListOf<Message>()
         val commands = mutableMapOf<String, PendingCommand>()
         var loseResponse = false
@@ -52,7 +64,7 @@ class BotRepositoryTest {
         override suspend fun handshake(): Handshake {
             handshakeError?.let { throw it }
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments"), epoch)
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext"), epoch)
         }
         override suspend fun snapshot(entryId: String): Snapshot {
             reads++
@@ -270,4 +282,57 @@ class BotRepositoryTest {
         assertTrue(store.cache?.messages.orEmpty().isEmpty())
         api.loginExpired = true; restart.refresh(); assertNull(store.cache); assertTrue(restart.state.value.needsLogin)
     }
+    private fun context(vararg ids: String, before: String? = "older", after: String? = "newer") =
+        MessageContextPage("one", "losna", 0, MessageRef("anchor", "user"), ids.map { Message(it, "user", it, 1) }, before, after)
+
+    @Test fun contextMergesBothDirectionsAndNeverEntersOfflineCache() = runBlocking<Unit> {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store)
+        repo.refresh(); repo.select("losna")
+        api.contexts.add(context("anchor")); repo.openMessageContext(MessageRef("anchor", "user"))
+        api.contexts.add(context("old", "anchor", before = null, after = null)); repo.moreMessageContext(true)
+        assertEquals("newer", repo.state.value.messageContext?.after)
+        api.contexts.add(context("new", before = null, after = null)); repo.moreMessageContext(false)
+        assertEquals(listOf("old", "anchor", "new"), repo.state.value.messageContext?.items?.map { it.id })
+        assertEquals(listOf(null to null, "older" to null, null to "newer"), api.contextPositions)
+        repo.refresh()
+        assertTrue(store.cache!!.messages.isEmpty())
+        repo.select("doll"); assertNull(repo.state.value.messageContext)
+    }
+
+    @Test fun contextIsWithdrawnOnEpochGenerationAuthenticationAndAnchorChanges() = runBlocking<Unit> {
+        for (change in listOf("epoch", "generation", "authentication", "anchor")) {
+            val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna")
+            api.contexts.add(context("anchor")); repo.openMessageContext(MessageRef("anchor", "user"))
+            when (change) {
+                "epoch" -> { api.epoch++; repo.refresh() }
+                "generation" -> { api.generation = "two"; repo.refresh() }
+                "authentication" -> { api.contextError = ApiFailure(401, "expired"); repo.moreMessageContext(true) }
+                else -> { api.contextError = ApiFailure(404, "withdrawn"); repo.moreMessageContext(true) }
+            }
+            assertNull(change, repo.state.value.messageContext)
+            assertFalse(repo.state.value.contextBusy)
+            if (change == "authentication") assertTrue(repo.state.value.needsLogin)
+            if (change == "anchor") assertNotNull(repo.state.value.contextError)
+        }
+    }
+
+    @Test fun leavingContextDiscardsAnInflightResponse() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna")
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        api.beforeContext = { entered.complete(Unit); release.await() }
+        api.contexts.add(context("anchor"))
+        val request = async { repo.openMessageContext(MessageRef("anchor", "user")) }
+        entered.await(); repo.clearMessageContext(); release.complete(Unit); request.await()
+        assertNull(repo.state.value.messageContext); assertFalse(repo.state.value.contextBusy)
+    }
+
+    @Test fun expiredSearchCursorClearsPreviouslyVisibleResults() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna")
+        api.pages.add(MessagePage("one", "losna", 0, "anchor", listOf(Message("anchor", "user", "anchor", 1)), "more"))
+        repo.searchMessages("anchor"); assertEquals(1, repo.state.value.searchResults.size)
+        api.historyError = ApiFailure(409, "withdrawn"); repo.searchMessages("anchor", more = true)
+        assertTrue(repo.state.value.searchResults.isEmpty()); assertNull(repo.state.value.searchCursor)
+        assertFalse(repo.state.value.searchDone)
+    }
+
 }
