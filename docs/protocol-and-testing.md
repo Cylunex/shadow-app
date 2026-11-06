@@ -1,6 +1,6 @@
 # 协议与开发验证
 
-2026-11-06 增量：当前源码 0.12.0（22），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)、[人格卡文件](bot-persona-files.md)、[历史定位](bot-history-context.md)、[统一登录](bot-unified-login.md)与[记忆检索](bot-memory-browser.md)。
+2026-11-06 增量：当前 0.12.0（22）已构建并沿用原签名覆盖安装，服务端累计增量已部署；原 0.7.x 记录作为历史保留。新增能力与验证见[日常体验设计](bot-everyday-experience.md)、[人格卡文件](bot-persona-files.md)、[历史定位](bot-history-context.md)、[统一登录](bot-unified-login.md)与[记忆检索](bot-memory-browser.md)。
 
 ## 工程
 
@@ -8,7 +8,7 @@
 - 固定现有缓存与本机其他 Android 项目已经采用的依赖组合；不在初期重建中追逐最新版本。
 - `local.properties` 仅包含本机 SDK 路径，已忽略。运行地址由设置输入，无构建期真实地址、账号和凭据。
 - `app` 使用系统 `org.json`；纯 JVM `bot-core` 测试使用固定版本依赖，避免把重复的平台 JSON 类打入应用。
-- 保留应用 ID `com.shadow.app`、提升源码 versionCode。0.7.0（15）已在仓库外使用原发布签名签署并完成真机首次安装，签名与上一包一致；私钥、签名参数和 APK 由工作区 operations 管理，未写入源码。旧数据覆盖升级尚未实测。
+- 保留应用 ID `com.shadow.app`、提升源码 versionCode。0.7.0（15）已在仓库外使用原发布签名签署并完成真机首次安装，签名与上一包一致；私钥、签名参数和 APK 由工作区 operations 管理，未写入源码。0.12.0 已验证覆盖升级、原登录保留和进程重启后的会话恢复。
 
 ## 已接入的 Product v1
 
