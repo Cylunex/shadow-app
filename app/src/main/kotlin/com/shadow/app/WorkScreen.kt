@@ -70,6 +70,11 @@ import com.shadow.bot.BotState
 }
 
 @Composable internal fun WorkDetailScreen(state: ScreenState, vm: BotViewModel) {
+    var saving by remember { mutableStateOf<com.shadow.bot.Artifact?>(null) }
+    val save = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val artifact = saving; saving = null
+        if (uri != null && artifact != null) vm.exportArtifact(artifact, uri)
+    }
     val detail = state.bot.workDetail?.takeIf { it.work.id == state.viewedWorkId }
     if (detail == null) {
         Text(if (state.bot.busy) "正在读取事项…" else "暂时无法显示该事项，请刷新或返回。", Modifier.padding(24.dp))
@@ -108,7 +113,11 @@ import com.shadow.bot.BotState
                         Text(artifact.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(if (artifact.size > 0) "${(artifact.size + 1023) / 1024} KB · ${artifact.type}" else artifact.type,
                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(if (canPreview) "查看内容" else "此格式请在工作台查看", style = MaterialTheme.typography.labelMedium)
+                        Text(if (canPreview) "查看内容" else if (artifact.downloadable) "可保存或分享原件" else "此格式请在工作台查看", style = MaterialTheme.typography.labelMedium)
+                        if (artifact.downloadable && "artifactDownload" in state.bot.capabilities) Row {
+                            TextButton(onClick = { saving = artifact; save.launch(artifact.name) }) { Text("保存") }
+                            TextButton(onClick = { vm.exportArtifact(artifact) }) { Text("分享") }
+                        }
                     }
                     if (canPreview) Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, "查看成果")
                 }

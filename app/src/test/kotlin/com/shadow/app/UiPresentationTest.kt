@@ -39,4 +39,18 @@ class UiPresentationTest {
         assertFalse(visibleAttachment(state.copy(bot = state.bot.copy(messages = emptyList())), attachment.id, "one"))
     }
 
+    @Test fun speechChunkingKeepsOriginalTextAndUnicodeBoundaries() {
+        val text = "一起读书。".repeat(1000) + "🙂".repeat(1000)
+        val chunks = speechChunks(text, 121)
+        assertEquals(text, chunks.joinToString(""))
+        assertTrue(chunks.all { it.length <= 121 && !it.last().isHighSurrogate() && !it.first().isLowSurrogate() })
+    }
+    @Test fun backgroundChecksDoNotNotifyReadRepliesOwnMessagesOrOldWork() {
+        val item = com.shadow.bot.InboxItem("entry", "private text", 1, 0, "new-reply", "assistant", 20)
+        assertEquals("message", notificationKind(item, "old", 10, "old", 10))
+        assertNull(notificationKind(item, "old", 10, "new-reply", 20))
+        assertNull(notificationKind(item.copy(messageRole = "user", workSequence = 10), "old", 10, "old", 10))
+        assertEquals("work", notificationKind(item.copy(messageRole = "user"), "old", 10, "old", 10))
+        assertNull(notificationKind(item, "new-reply", 20, "old", 10))
+    }
 }

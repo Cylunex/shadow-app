@@ -1,5 +1,7 @@
 # 协议与开发验证
 
+2026-11-06 增量：当前源码 0.8.0（18），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)。
+
 ## 工程
 
 - JDK 17，Gradle 8.13，AGP 8.13.2，Kotlin / Compose 编译插件 2.2.21，SDK 36，minSdk 29。
@@ -16,11 +18,16 @@
 | --- | --- |
 | GET handshake | 协议版本、代次、能力、联系人与会话 ID |
 | GET snapshot?entryId=… | 最近 200 条消息和真实事项状态；entryWorks 按入口先过滤再取最近 100 项 |
+| GET history?entryId=…&before=…&query=… | 按入口和 memory epoch 分页／搜索有效历史 |
+| GET live?entryId=… | 当前临时生成正文，非正式聊天记录 |
+| GET artifact-content/{id}?entryId=… | 校验入口、来源和快照的原件下载 |
+| GET memory/{id} | 有效记忆、当前版本和来源片段 |
+| POST contact | 联系人归档／恢复与版本检查 |
 | GET inbox | 各伙伴最近可见消息与在办事项数量 |
 | GET work-detail/{id}?entryId=… | 事项计划、结果、执行记录、成果与当前允许操作 |
 | GET artifact-text/{id}?entryId=… | 原成果快照的只读文本预览 |
 | GET events?after=… | 失效通知与游标；有变化后回读快照 |
-| POST commands | 消息或 work.resume / work.cancel，稳定命令 ID 与 generation；工作命令附 workId / expectedVersion |
+| POST commands | 消息、work.resume / work.cancel 或 memory.correct / memory.quiet / memory.forget；稳定命令 ID、generation 与目标 expectedVersion，分别使用 workId / memoryId |
 | POST attachments?id=…&entryId=…&name=… | 二进制原件转接 Life 通用 assets 接口，每个最多 20 MiB |
 | GET attachments/{id}?entryId=… | 校验所属伙伴与来源后读取原件缓存 |
 | POST roles | 新 Bot 联系人，客户端生成 `bot-UUID`；同 ID 同资料重试幂等 |
@@ -28,13 +35,13 @@
 | POST persona | 按 revision 保存人格；冲突刷新后处理，不盲目覆盖 |
 | GET memories | 当前本人最近 100 条有效共享记忆，仅返回 id / kind / text |
 
-所有写入使用 JSON 与 `X-Losna-Request: 1`。服务端继续经过既有 DSH admission / Host / Origin 检查。新角色仅保存 id 与名字，复用主模型配置，QQ 禁用；不生成凭据、职业模板、独立主脑或记忆库。人格卡独立于 entry，会话 ID 不随卡片切换而变化。
+除附件二进制上传外，写入使用 JSON 与 `X-Losna-Request: 1`。服务端继续经过既有 DSH admission / Host / Origin 检查。新角色仅保存 id 与名字，复用主模型配置，QQ 禁用；不生成凭据、职业模板、独立主脑或记忆库。人格卡独立于 entry，会话 ID 不随卡片切换而变化。
 
-本机待发送队列最多 20 条，单条最多 4000 UTF-16 字符；写盘成功后才发请求。回执未知时保留原 id、entryId、action、text、workId 和 expectedVersion，不自动重放旧意图。409 保留原记录，核对后移除再提交新意图，不自动刷新版本重试。状态文件写入版本 3，保存待发附件引用，兼容读取版本 1／2 的待发消息。换服务器或断开本机前先处理待发记录。内存草稿可跨旋转保留，未点击发送的草稿不持久化到系统 saved state；进程退出后不保证恢复。待确认消息和事项命令保存在加密文件。
+本机待发送队列最多 20 条，单条最多 4000 UTF-16 字符；写盘成功后才发请求。回执未知时保留原 id、entryId、action、text、workId 和 expectedVersion，不自动重放旧意图。409 保留原记录，核对后移除再提交新意图，不自动刷新版本重试。状态文件写入版本 4，保存待发引用与草稿，兼容读取版本 1–3。换服务器或断开本机前先处理待发记录。草稿不进入系统 saved state，改为加密原子保存；已读取的附件原件另存加密文件。排队与消费草稿在同一次提交完成。待确认消息、事项与记忆命令保留原编号和目标版本。
 
 Android SEND / PROCESS_TEXT 的文字最多 4000 字符，选择伙伴后追加到已有草稿，合并超长则提示；SEND / SEND_MULTIPLE 还接收最多 8 个 content URI 附件，上传完成后留在草稿，不自动发送。
 
-401 停止轮询，重连保留待发命令；本机断开只清除本机会话，不声称吊销服务端 Cookie。新角色与人格的跨端变更在刷新／回前台时回读。前台每 4 秒检查事件，后台停止轮询；服务端 Agent 不依赖手机在线。
+401 停止轮询，重连保留待发命令；本机断开只清除本机会话，不声称吊销服务端 Cookie。新角色与人格的跨端变更在刷新／回前台时回读。前台通常每 4 秒检查事件；支持生成预览时，选中聊天每秒更新正文与事件。后台停止前台轮询，用户可开启 WorkManager 定期检查，最短周期 15 分钟且不保证准时；服务端 Agent 不依赖手机在线。
 
 ## 验证
 

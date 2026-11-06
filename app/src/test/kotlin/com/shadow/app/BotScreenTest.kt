@@ -128,4 +128,40 @@ class BotScreenTest {
         compose.onNodeWithText("选择文件").assertIsDisplayed()
     }
 
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun memoryActionsStayInlineAndShowOriginalSources() {
+        val vm = model()
+        val item = MemoryItem("memory", "周末喜欢读历史书。", "preference", 2)
+        val state = ScreenState(bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "memoryActions"), destination = Destination.Memories,
+            memories = listOf(item), memoryDetail = MemoryDetail(item, listOf(MemorySource("source", "周末我想读一点历史。", "2026-11-06", false))))
+        compose.setContent { BotTheme { BotScreen(state, vm) } }
+        compose.onNodeWithText("更正").performClick()
+        compose.onNodeWithText("保存更正").assertIsDisplayed()
+        screenshot("memory-edit-320")
+        compose.onNodeWithText("遗忘").performClick()
+        compose.onNodeWithText("遗忘相关内容").assertIsDisplayed()
+    }
+    @Test fun archivedContactsDoNotDisappearAndSearchResultsShowFullText() {
+        val vm = model()
+        val state = mutableStateOf(ScreenState(bot = bot.copy(roles = roles.map { if (it.id == "reading") it.copy(archived = true) else it }, capabilities = bot.capabilities + "contactArchive")))
+        compose.setContent { BotTheme { BotScreen(state.value, vm) } }
+        compose.onNodeWithText("阅读伙伴").assertDoesNotExist()
+        compose.onNodeWithText("已归档").performClick()
+        compose.onNodeWithText("阅读伙伴").assertIsDisplayed()
+        screenshot("archive-393")
+        compose.runOnIdle { state.value = state.value.copy(destination = Destination.Search, bot = bot.copy(selected = "assistant", searchQuery = "历史", searchDone = true,
+            searchResults = listOf(Message("old", "assistant", "这条历史消息可以直接阅读和复制。", now, "小影")), searchCursor = "more")) }
+        compose.onNodeWithText("这条历史消息可以直接阅读和复制。").assertIsDisplayed()
+        compose.onNodeWithText("更多结果").assertIsDisplayed()
+        screenshot("history-search-393")
+    }
+    @Test fun fileResultsOfferSaveAndShareAlongsidePreview() {
+        val vm = model()
+        val work = Work("report", "assistant", "整理阅读报告", "completed", "报告已完成。", "", 1)
+        val state = ScreenState(bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "artifactDownload",
+            workDetail = WorkDetail(work, emptyList(), emptyList(), listOf(Artifact("pdf", "阅读报告.pdf", 1024, "application/pdf", false, "a".repeat(64), true)), emptySet(), false, false)),
+            destination = Destination.WorkDetail, viewedWorkId = work.id)
+        compose.setContent { BotTheme { BotScreen(state, vm) } }
+        compose.onNodeWithText("保存").assertIsDisplayed(); compose.onNodeWithText("分享").assertIsDisplayed()
+        screenshot("artifact-export-393")
+    }
 }

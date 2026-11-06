@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private val model by lazy { ViewModelProvider(this)[BotViewModel::class.java] }
     private fun receiveShare(incoming: Intent?) {
         if (incoming == null) return
+        incoming.getStringExtra("bot-entry")?.let { model.openNotification(it); incoming.removeExtra("bot-entry") }
         try {
             if (incoming.action in listOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE, Intent.ACTION_PROCESS_TEXT)) model.dismissShare()
             @Suppress("DEPRECATION")
@@ -96,7 +97,7 @@ class MainActivity : ComponentActivity() {
         vm.navigate(when (state.destination) {
             Destination.WorkDetail -> Destination.Progress
             Destination.ArtifactPreview -> Destination.WorkDetail
-            Destination.Progress, Destination.Persona, Destination.Memories, Destination.AttachmentPreview -> Destination.Chat
+            Destination.Search, Destination.Progress, Destination.Persona, Destination.Memories, Destination.AttachmentPreview -> Destination.Chat
             else -> Destination.Conversations
         })
     }
@@ -116,6 +117,7 @@ class MainActivity : ComponentActivity() {
             } else Text(when (state.destination) {
             Destination.Conversations -> "Shadow"
             Destination.Chat -> role?.name ?: "聊天"
+            Destination.Search -> "搜索聊天记录"
             Destination.Settings -> "连接设置"
             Destination.CreateRole -> "新的伙伴"
             Destination.Progress -> "事项与成果"
@@ -136,7 +138,9 @@ class MainActivity : ComponentActivity() {
                 Box {
                     IconButton(onClick = { menuOpen = true }) { Icon(Icons.Outlined.MoreVert, "聊天选项") }
                     DropdownMenu(menuOpen, { menuOpen = false }) {
+                        if ("messageHistory" in state.bot.capabilities) DropdownMenuItem(text = { Text("搜索聊天记录") }, onClick = { menuOpen = false; vm.navigate(Destination.Search) })
                         DropdownMenuItem(text = { Text("事项与成果") }, onClick = { menuOpen = false; vm.navigate(Destination.Progress) })
+                        if ("contactArchive" in state.bot.capabilities) DropdownMenuItem(text = { Text(if (role?.archived == true) "移回聊天列表" else "归档聊天") }, onClick = { menuOpen = false; vm.archiveContact() })
                         if ("personas" in state.bot.capabilities) DropdownMenuItem(text = { Text("角色与人设") }, onClick = { menuOpen = false; vm.navigate(Destination.Persona) })
                         if ("memories" in state.bot.capabilities) DropdownMenuItem(text = { Text("共享记忆") }, onClick = { menuOpen = false; vm.navigate(Destination.Memories) })
                     }
@@ -160,8 +164,9 @@ class MainActivity : ComponentActivity() {
                 Destination.Progress -> Progress(state.bot, vm)
                 Destination.WorkDetail -> WorkDetailScreen(state, vm)
                 Destination.ArtifactPreview -> ArtifactScreen(state)
+                Destination.Search -> MessageSearchScreen(state, vm)
                 Destination.AttachmentPreview -> AttachmentPreviewScreen(state, vm)
-                Destination.Memories -> Memories(state.memories)
+                Destination.Memories -> MemoryScreen(state, vm)
                 Destination.Persona -> PersonaEditor(state, vm)
             }
         }
@@ -179,6 +184,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 @Composable private fun Settings(state: ScreenState, vm: BotViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var notifications by remember { mutableStateOf(BackgroundChecks.enabled(context)) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted ->
+        notifications = granted; BackgroundChecks.configure(context, granted)
+    }
     var address by rememberSaveable(state.baseUrl) { mutableStateOf(state.baseUrl) }
     // A launch token must never enter savedInstanceState or the persistent store.
     var token by remember { mutableStateOf("") }
@@ -189,6 +199,18 @@ class MainActivity : ComponentActivity() {
         item { OutlinedTextField(token, { token = it }, label = { Text("当前启动口令") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth()) }
         item { Button(onClick = { vm.connect(address, token); token = "" }, enabled = !state.connecting && !state.storageError && !state.bot.busy && address.isNotBlank() && token.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (state.connecting) "正在连接…" else "连接") } }
         item { Text("对话、工作和记忆由现有服务端保存。手机关闭后，伙伴仍可继续处理已接收的事项。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (state.baseUrl.isNotBlank()) item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("后台提醒")
+                    Text("定期检查新回复和事项进展，可能延迟；强制停止后需再次打开。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(notifications, { enabled ->
+                    if (enabled && android.os.Build.VERSION.SDK_INT >= 33) permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                    else { notifications = enabled; BackgroundChecks.configure(context, enabled) }
+                })
+            }
+        }
         if (state.baseUrl.isNotBlank()) item { TextButton(onClick = vm::disconnect, enabled = !state.connecting && !state.bot.busy) { Text("断开本机连接") } }
         if (state.bot.pending.isNotEmpty()) item { Text("待确认消息", style = MaterialTheme.typography.titleMedium) }
         items(state.bot.pending, key = { it.id }) { pending ->
@@ -204,16 +226,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun Memories(memories: List<MemoryItem>) {
-    LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("这是你与伙伴共享的有效记忆。更正、少提或遗忘，直接在聊天中说明。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (memories.isEmpty()) item { Empty("暂时没有可显示的记忆。") }
-        items(memories, key = { it.id }) { memory -> Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface) {
-            SelectionContainer { Text(memory.text, Modifier.fillMaxWidth().padding(18.dp)) }
-        } }
-        item { Text("显示最近 100 条有效记忆。", style = MaterialTheme.typography.labelSmall) }
-    }
-}
 @Composable private fun PersonaEditor(state: ScreenState, vm: BotViewModel) {
     val original = state.persona
     if (original == null) { Empty("正在读取人设…"); return }

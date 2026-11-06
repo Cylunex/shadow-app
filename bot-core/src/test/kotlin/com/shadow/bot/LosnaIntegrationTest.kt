@@ -37,6 +37,12 @@ class LosnaIntegrationTest {
             assertTrue(api.snapshot("losna").messages.none { it.text == "synthetic conversation" })
             assertTrue(api.events(0).changed)
             assertTrue(api.memories().isEmpty())
+            val results = api.history(id, query = "synthetic conversation")
+            assertEquals(receipt, results.items.single().id)
+            val role = api.handshake().roles.first { it.id == id }
+            api.saveContact(role, true)
+            assertTrue(api.handshake().roles.first { it.id == id }.archived)
+            api.saveContact(api.handshake().roles.first { it.id == id }, false)
             val detail = api.work("fixture-work", "losna")
             assertEquals("waiting", detail.work.state)
             assertEquals("write report", detail.plan.single().content)
@@ -50,6 +56,8 @@ class LosnaIntegrationTest {
             assertTrue(finished.runs.isNotEmpty())
             val artifact = finished.artifacts.single()
             assertTrue(artifact.textPreview)
+            assertTrue(artifact.downloadable)
+            assertEquals("synthetic artifact content", String(api.artifactContent(artifact, "losna")))
             assertEquals("synthetic artifact content", api.artifact(artifact.id, "losna").text)
             assertTrue(api.inbox().items.any { it.entryId == id && it.text == "synthetic Losna reply" })
             try { api.work("fixture-work", id); fail("cross-entry access must fail") }

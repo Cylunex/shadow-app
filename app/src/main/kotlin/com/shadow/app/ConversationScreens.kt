@@ -3,6 +3,8 @@ package com.shadow.app
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,8 +45,9 @@ import kotlinx.coroutines.launch
 @Composable internal fun Contacts(state: ScreenState, vm: BotViewModel) {
     var query by rememberSaveable { mutableStateOf("") }
     var activeOnly by rememberSaveable { mutableStateOf(false) }
+    var archived by rememberSaveable { mutableStateOf(false) }
     val roles = state.bot.roles.filter {
-        (query.isBlank() || it.name.contains(query.trim(), true) || it.preview.contains(query.trim(), true)) &&
+        it.archived == archived && (query.isBlank() || it.name.contains(query.trim(), true) || it.preview.contains(query.trim(), true)) &&
             (!activeOnly || it.activeWorks > 0)
     }.sortedByDescending { it.lastMessageAt }
     Column(Modifier.fillMaxSize()) {
@@ -63,10 +66,11 @@ import kotlinx.coroutines.launch
                 unfocusedContainerColor = MaterialTheme.colorScheme.surface,
                 focusedContainerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp))
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically,
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(!activeOnly, { activeOnly = false }, label = { Text("全部 ${state.bot.roles.size}") })
-            FilterChip(activeOnly, { activeOnly = true }, label = { Text("进行中 ${state.bot.roles.count { it.activeWorks > 0 }}") })
+            FilterChip(!activeOnly && !archived, { activeOnly = false; archived = false }, label = { Text("全部 ${state.bot.roles.count { !it.archived }}") })
+            if ("contactArchive" in state.bot.capabilities) FilterChip(archived, { archived = !archived; activeOnly = false }, label = { Text("已归档") })
+            FilterChip(activeOnly, { activeOnly = true; archived = false }, label = { Text("进行中 ${state.bot.roles.count { it.activeWorks > 0 }}") })
             Spacer(Modifier.weight(1f))
             IconButton(onClick = vm::refresh, enabled = !state.bot.busy) { Icon(Icons.Outlined.Refresh, "刷新会话") }
         }
@@ -148,6 +152,7 @@ import kotlinx.coroutines.launch
         if (followingLatest && (messages.isNotEmpty() || pending.isNotEmpty())) scroll.scrollToItem(0)
     }
     Column(Modifier.fillMaxSize()) {
+        if (bot.offline) Text("离线副本 · 连接后核对最新内容", Modifier.padding(horizontal = 20.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         val ongoing = bot.works.count { it.isOngoing() }
         if (ongoing > 0) Surface(onClick = { vm.navigate(Destination.Progress) }, color = MaterialTheme.colorScheme.background,
             shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -169,6 +174,12 @@ import kotlinx.coroutines.launch
             }
             LazyColumn(Modifier.fillMaxSize(), state = scroll, reverseLayout = true,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                bot.liveReply?.let { live -> item(key = "live:${live.id}") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (live.text.isNotBlank()) Text(live.text, style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 27.sp))
+                        Text("正在生成…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } }
                 items(pending.asReversed(), key = { "pending:${it.id}" }) { command ->
                     Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
                         MessageBubble(command.text, true, "${command.label} · 等待确认", command.attachments, vm)
@@ -190,6 +201,10 @@ import kotlinx.coroutines.launch
                             listOf(if (message.role == "user") "" else message.personaName, messageTime(message.at)).filter(String::isNotBlank).joinToString(" · "), message.attachments, vm)
                     }
                 }
+                if (bot.historyCursor != null) item(key = "history-loader") {
+                    TextButton(onClick = vm::loadHistory, enabled = !bot.historyBusy && !bot.busy,
+                        modifier = Modifier.fillMaxWidth()) { Text(if (bot.historyBusy) "正在读取…" else "查看更早消息") }
+                }
             }
             if (showJump) FilledTonalButton(onClick = { scope.launch { scroll.animateScrollToItem(0); followingLatest = true } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp), elevation = ButtonDefaults.filledTonalButtonElevation(4.dp)) {
@@ -197,29 +212,40 @@ import kotlinx.coroutines.launch
                 Spacer(Modifier.width(6.dp)); Text("回到最新")
             }
         }
+        if (state.speaking) TextButton(onClick = vm::stopSpeaking, modifier = Modifier.fillMaxWidth()) { Text("停止朗读") }
         val attachments = state.attachmentDrafts[bot.selected].orEmpty()
         if (attachments.isNotEmpty()) AttachmentDrafts(attachments, vm)
         Composer(text, attachments, "attachments" in bot.capabilities, !bot.busy && !bot.needsLogin && bot.selected != null,
-            onChange = vm::draft, onSend = { followingLatest = true; vm.send(text) }, onFiles = { vm.addAttachments(it) })
+            onChange = vm::draft, onSend = { followingLatest = true; vm.send(text) }, onFiles = { vm.addAttachments(it) }, onDictate = vm::dictate, onVoiceStart = vm::beginDictation, onVoiceError = vm::shareError)
     }
 }
 
-@Composable private fun Composer(text: String, attachments: List<AttachmentDraft>, canAttach: Boolean, enabled: Boolean, onChange: (String) -> Unit, onSend: () -> Unit, onFiles: (List<android.net.Uri>) -> Unit) {
+@Composable private fun Composer(text: String, attachments: List<AttachmentDraft>, canAttach: Boolean, enabled: Boolean, onChange: (String) -> Unit, onSend: () -> Unit, onFiles: (List<android.net.Uri>) -> Unit, onDictate: (String) -> Unit, onVoiceStart: () -> Unit, onVoiceError: (String) -> Unit) {
     var tooLong by remember { mutableStateOf(false) }
     var attachmentMenu by remember { mutableStateOf(false) }
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(8), onFiles)
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), onFiles)
+    val dictate = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let(onDictate)
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
         Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceVariant,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.Bottom) {
-                if (canAttach) Box {
+                Box {
                     IconButton(onClick = { attachmentMenu = true }, enabled = attachments.size < 8 && enabled, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.Outlined.Add, "添加图片或文件")
                     }
                     DropdownMenu(attachmentMenu, { attachmentMenu = false }) {
-                        DropdownMenuItem(text = { Text("选择图片") }, onClick = { attachmentMenu = false; photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
-                        DropdownMenuItem(text = { Text("选择文件") }, onClick = { attachmentMenu = false; files.launch(arrayOf("*/*")) })
+                        DropdownMenuItem(text = { Text("语音输入") }, onClick = {
+                            attachmentMenu = false; onVoiceStart()
+                            try { dictate.launch(android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "说完后可以编辑，再发送")
+                            }) } catch (_: android.content.ActivityNotFoundException) { onVoiceError("手机尚未安装语音识别服务，可使用键盘的语音输入。") }
+                        })
+                        if (canAttach) DropdownMenuItem(text = { Text("选择图片") }, onClick = { attachmentMenu = false; photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
+                        if (canAttach) DropdownMenuItem(text = { Text("选择文件") }, onClick = { attachmentMenu = false; files.launch(arrayOf("*/*")) })
                     }
                 }
                 BasicTextField(text, { if (it.length <= 4000) { tooLong = false; onChange(it) } else tooLong = true },
@@ -270,6 +296,7 @@ import kotlinx.coroutines.launch
                         Icon(Icons.Outlined.MoreVert, "消息操作", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     DropdownMenu(actions, { actions = false }) {
+                        if (!own && text.isNotBlank()) DropdownMenuItem(text = { Text("朗读") }, onClick = { actions = false; vm.speak(text) })
                         DropdownMenuItem(text = { Text("复制全文") }, onClick = { clipboard.setText(AnnotatedString(text.ifBlank { attachments.joinToString("\n") { it.name } })); actions = false })
                     }
                 }

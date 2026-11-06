@@ -8,13 +8,22 @@ import java.io.IOException
 class BotRepositoryTest {
     private class Store : StateStore {
         var saved = SavedState(Session("https://example.com/", emptyList()))
+        var cache: OfflineCache? = null
+        override fun readCache() = cache
+        override fun writeCache(cache: OfflineCache) { this.cache = cache }
+        override fun clearCache() { cache = null }
         var fail = false
         override fun read() = saved
         override fun write(state: SavedState) { if (fail) throw IOException("disk unavailable"); saved = state }
     }
     private class Api : ProductApi {
         var generation = "one"
+        var handshakeError: Exception? = null
         var cursor = 0L
+        var epoch = 0L
+        var historyCursor: String? = null
+        val pages = java.util.ArrayDeque<MessagePage>()
+        override suspend fun history(entryId: String, before: String?, query: String): MessagePage = pages.removeFirst()
         var rows = mutableListOf<Message>()
         val commands = mutableMapOf<String, PendingCommand>()
         var loseResponse = false
@@ -41,12 +50,13 @@ class BotRepositoryTest {
         }
         override suspend fun createRole(id: String, name: String) = id
         override suspend fun handshake(): Handshake {
+            handshakeError?.let { throw it }
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments"))
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments"), epoch)
         }
         override suspend fun snapshot(entryId: String): Snapshot {
             reads++
-            return Snapshot(generation, "main:owner:$entryId", if (entryId == "losna") rows.toList() else emptyList(), emptyList(), cursor)
+            return Snapshot(generation, "main:owner:$entryId", if (entryId == "losna") rows.toList() else emptyList(), emptyList(), cursor, historyCursor, epoch)
         }
         override suspend fun events(after: Long) = Events(generation, cursor, after < cursor, reset, false)
         override suspend fun send(message: PendingCommand, generation: String): String {
@@ -211,4 +221,53 @@ class BotRepositoryTest {
         assertNull(repo.state.value.artifactText); assertEquals(before.workDetail, repo.state.value.workDetail)
     }
 
+    @Test fun draftConsumptionIsAtomicWithPendingQueueAndDoesNotConsumeOtherContacts() = runBlocking<Unit> {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store)
+        store.saved = store.saved.copy(drafts = mapOf("losna" to "hello", "doll" to "keep"))
+        repo.refresh(); repo.select("losna"); api.loseResponse = true
+        assertTrue(repo.send("hello"))
+        assertFalse(store.saved.drafts.containsKey("losna")); assertEquals("keep", store.saved.drafts["doll"])
+        val restored = StateCodec.decode(StateCodec.encode(store.saved))
+        assertEquals(1, restored.pending.size); assertEquals(store.saved.drafts, restored.drafts)
+        store.saved = store.saved.copy(drafts = mapOf("losna" to "unsaved")); store.fail = true
+        assertFalse(repo.send("unsaved")); assertEquals("unsaved", store.saved.drafts["losna"])
+    }
+    @Test fun historyKeepsTheBoundaryWhenNewMessagesArriveAndClearsOnForget() = runBlocking<Unit> {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store)
+        api.rows.addAll(listOf(Message("2", "user", "second", 2), Message("3", "assistant", "third", 3)))
+        api.historyCursor = "before-two"
+        repo.refresh(); repo.select("losna")
+        api.pages.add(MessagePage("one", "losna", 0, "", listOf(Message("1", "user", "first", 1)), null))
+        repo.loadHistory(); assertEquals(listOf("1", "2", "3"), repo.state.value.messages.map { it.id })
+        api.rows.removeAt(0); api.rows.add(Message("4", "assistant", "fourth", 4)); repo.refresh()
+        assertEquals(listOf("1", "2", "3", "4"), repo.state.value.messages.map { it.id })
+        api.epoch++; api.rows.clear(); api.historyCursor = null; repo.refresh()
+        assertTrue(repo.state.value.messages.isEmpty()); assertNull(repo.state.value.historyCursor)
+    }
+    @Test fun attachmentDraftRestoreNeverPersistsUriGrantsOrAutomaticallyResumesUpload() {
+        val draft = AttachmentDraft("a".repeat(36), "content://private/provider", "原件.pdf", "uploading", mediaType = "application/pdf", localReady = true)
+        val original = SavedState(drafts = mapOf("losna" to "草稿"), workDrafts = mapOf("work" to "补充"), attachmentDrafts = mapOf("losna" to listOf(draft)))
+        val encoded = StateCodec.encode(original); assertFalse(encoded.contains("content://"))
+        val restored = StateCodec.decode(encoded)
+        assertEquals(original.drafts, restored.drafts); assertEquals(original.workDrafts, restored.workDrafts)
+        val attachment = restored.attachmentDrafts.getValue("losna").single()
+        assertTrue(attachment.localReady); assertEquals("failed", attachment.status); assertTrue(attachment.uri.isEmpty())
+        val pending = PendingCommand("memory-operation", "losna", "new fact", 1, "memory.correct", expectedVersion = 3, memoryId = "memory")
+        assertEquals(pending, StateCodec.decode(StateCodec.encode(SavedState(pending = listOf(pending)))).pending.single())
+    }
+    @Test fun offlineCacheIsBoundedAndCannotBypassReconnectRevocation() = runBlocking<Unit> {
+        val api = Api(); val store = Store(); val original = BotRepository(api, store)
+        api.rows.add(Message("private", "user", "previously visible", 1))
+        original.refresh(); original.select("losna")
+        assertEquals("previously visible", store.cache?.messages?.single()?.text)
+        val decoded = OfflineCacheCodec.decode(OfflineCacheCodec.encode(requireNotNull(store.cache)))
+        assertEquals(store.cache, decoded)
+        val restart = BotRepository(api, store); api.handshakeError = IOException("offline")
+        restart.refresh(); restart.select("losna")
+        assertTrue(restart.state.value.offline); assertEquals("private", restart.state.value.messages.single().id)
+        api.handshakeError = null; api.epoch++; api.rows.clear(); restart.refresh()
+        assertFalse(restart.state.value.offline); assertTrue(restart.state.value.messages.isEmpty())
+        assertTrue(store.cache?.messages.orEmpty().isEmpty())
+        api.loginExpired = true; restart.refresh(); assertNull(store.cache); assertTrue(restart.state.value.needsLogin)
+    }
 }

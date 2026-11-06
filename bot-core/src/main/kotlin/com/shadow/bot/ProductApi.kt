@@ -19,6 +19,9 @@ class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
     suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment = throw ApiFailure(503, "附件上传暂不可用。")
     suspend fun attachmentContent(attachment: Attachment, entryId: String): ByteArray = throw ApiFailure(503, "附件暂不可用。")
+    suspend fun live(entryId: String): LiveReplyState = throw ApiFailure(503, "当前服务尚未开放生成预览。")
+    suspend fun history(entryId: String, before: String? = null, query: String = ""): MessagePage = throw ApiFailure(503, "当前服务尚未开放历史检索。")
+    suspend fun artifactContent(artifact: Artifact, entryId: String): ByteArray = throw ApiFailure(503, "当前服务尚未开放成果下载。")
     suspend fun createRole(id: String, name: String): String
     suspend fun inbox(): Inbox
     suspend fun work(id: String, entryId: String): WorkDetail
@@ -29,6 +32,8 @@ interface ProductApi {
     suspend fun send(message: PendingCommand, generation: String): String
     suspend fun personas(entryId: String): PersonaSettings
     suspend fun savePersona(settings: PersonaSettings): PersonaSettings
+    suspend fun saveContact(role: BotRole, archived: Boolean) { throw ApiFailure(503, "当前服务尚未开放联系人归档。") }
+    suspend fun memory(id: String): MemoryDetail = throw ApiFailure(503, "当前服务尚未开放记忆详情。")
     suspend fun memories(): List<MemoryItem>
 }
 
@@ -72,15 +77,41 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         require(row.getInt("protocolVersion") == 1) { "服务协议不兼容，请更新客户端。" }
         val capabilities = row.getJSONObject("capabilities")
         return Handshake(row.getString("generation"), row.getJSONArray("conversations").objects().map {
-            BotRole(it.getString("entryId"), it.getString("id"), it.getString("name"), it.string("personaId"))
-        }, capabilities.keys().asSequence().filter { capabilities.optBoolean(it) }.toSet())
+            BotRole(it.getString("entryId"), it.getString("id"), it.getString("name"), it.string("personaId"), archived = it.optBoolean("archived"), contactVersion = it.optLong("contactVersion"))
+        }, capabilities.keys().asSequence().filter { capabilities.optBoolean(it) }.toSet(), row.optLong("memoryEpoch"))
     }
     override suspend fun snapshot(entryId: String): Snapshot {
         val row = request("snapshot?entryId=${encode(entryId)}")
         return Snapshot(row.getString("generation"), row.getJSONObject("conversation").getString("id"),
-            row.getJSONArray("messages").objects().map { Message(it.getString("id"), it.getString("role"), it.string("text"), it.optLong("at"), it.string("personaName"), it.string("state"),
-                (it.optJSONArray("attachments") ?: JSONArray()).objects().map(::parseAttachment)) },
-            (row.optJSONArray("entryWorks") ?: row.getJSONArray("works")).objects().map(::parseWork), row.getLong("cursor"))
+            row.getJSONArray("messages").objects().map(::parseMessage),
+            (row.optJSONArray("entryWorks") ?: row.getJSONArray("works")).objects().map(::parseWork), row.getLong("cursor"), row.string("historyCursor").takeIf(String::isNotEmpty), row.optLong("memoryEpoch"))
+    }
+    override suspend fun live(entryId: String): LiveReplyState = request("live?entryId=${encode(entryId)}").let { row ->
+        LiveReplyState(row.getString("generation"), row.getString("entryId"), row.optJSONObject("reply")?.let { LiveReply(it.getString("id"), it.getString("text")) })
+    }
+    private fun parseMessage(it: JSONObject) = Message(it.getString("id"), it.getString("role"), it.string("text"), it.optLong("at"), it.string("personaName"), it.string("state"),
+        (it.optJSONArray("attachments") ?: JSONArray()).objects().map(::parseAttachment))
+    override suspend fun history(entryId: String, before: String?, query: String): MessagePage {
+        val row = request("history?entryId=${encode(entryId)}&query=${encode(query)}" + (before?.let { "&before=${encode(it)}" } ?: ""))
+        return MessagePage(row.getString("generation"), row.getString("entryId"), row.getLong("epoch"), row.getString("query"),
+            row.getJSONArray("items").objects().map(::parseMessage), row.string("next").takeIf(String::isNotEmpty))
+    }
+    override suspend fun artifactContent(artifact: Artifact, entryId: String): ByteArray = withContext(Dispatchers.IO) {
+        require(artifact.downloadable && artifact.size in 0..20L * 1024 * 1024 && Regex("[a-f0-9]{64}").matches(artifact.sha256))
+        val request = Request.Builder().url(endpoint("artifact-content/${encode(artifact.id)}?entryId=${encode(entryId)}")).build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw ApiFailure(response.code, "成果暂不可用，请返回事项刷新。")
+            val output = java.io.ByteArrayOutputStream()
+            response.body!!.byteStream().use { input ->
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = input.read(buffer); if (count < 0) break
+                    require(output.size().toLong() + count <= artifact.size) { "成果大小不匹配。" }
+                    output.write(buffer, 0, count)
+                }
+            }
+            output.toByteArray().also { require(it.size.toLong() == artifact.size && sha256(it) == artifact.sha256) { "成果校验失败，请重试。" } }
+        }
     }
     override suspend fun events(after: Long): Events = request("events?after=$after").let {
         Events(it.getString("generation"), it.getLong("cursor"), it.getJSONArray("items").length() > 0, it.optBoolean("resetRequired"), it.optBoolean("hasMore"))
@@ -89,6 +120,7 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         val body = JSONObject().put("id", message.id).put("generation", generation).put("action", message.action).put("entryId", message.entryId)
         if (message.action != "work.cancel") body.put("text", message.text)
         message.workId?.let { body.put("workId", it).put("expectedVersion", message.expectedVersion) }
+        message.memoryId?.let { body.put("memoryId", it).put("expectedVersion", message.expectedVersion) }
         if (message.attachments.isNotEmpty()) body.put("attachmentIds", JSONArray(message.attachments.map { it.id }))
         val result = request("commands", body)
         check(result.optBoolean("accepted")) { "消息尚未被接收。" }
@@ -97,7 +129,7 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
     override suspend fun inbox(): Inbox = request("inbox").let { row ->
         Inbox(row.getString("generation"), row.getJSONArray("items").objects().map {
             val last = it.optJSONObject("lastMessage")
-            InboxItem(it.getString("entryId"), last?.string("text").orEmpty(), last?.optLong("at") ?: 0, it.optInt("activeWorks"))
+            InboxItem(it.getString("entryId"), last?.string("text").orEmpty(), last?.optLong("at") ?: 0, it.optInt("activeWorks"), last?.string("id").orEmpty(), last?.string("role").orEmpty(), it.optLong("workSequence"))
         })
     }
     private fun parseWork(row: JSONObject) = Work(row.getString("id"), row.optString("entryId", "losna"), row.string("goal"), row.string("state"),
@@ -106,7 +138,7 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         val actions = row.getJSONArray("allowedActions")
         WorkDetail(parseWork(row), row.getJSONArray("plan").objects().map { PlanStep(it.string("content"), it.string("status")) },
             row.getJSONArray("runs").objects().map { WorkRun(it.getString("id"), it.string("state"), it.optLong("startedAt"), it.optLong("finishedAt"), it.string("result"), it.optBoolean("resultTruncated")) },
-            row.getJSONArray("artifacts").objects().map { Artifact(it.getString("id"), it.string("name"), it.optLong("size"), it.string("type"), it.optBoolean("textPreview")) },
+            row.getJSONArray("artifacts").objects().map { Artifact(it.getString("id"), it.string("name"), it.optLong("size"), it.string("type"), it.optBoolean("textPreview"), it.string("sha256"), it.optBoolean("downloadable")) },
             (0 until actions.length()).map(actions::getString).toSet(), row.optBoolean("resultTruncated"), row.optBoolean("planTruncated"))
     }
     override suspend fun artifact(id: String, entryId: String): ArtifactText = request("artifact-text/${encode(id)}?entryId=${encode(entryId)}").let {
@@ -118,7 +150,14 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         .put("cards", JSONArray(settings.cards.map { JSONObject().put("id", it.id).put("name", it.name).put("displayName", it.displayName)
             .put("instructions", it.instructions).put("inheritIdentity", it.inheritIdentity) }))))
     override suspend fun memories(): List<MemoryItem> = request("memories").getJSONArray("items").objects().map {
-        MemoryItem(it.getString("id"), it.getString("text"), it.getString("kind"))
+        MemoryItem(it.getString("id"), it.getString("text"), it.getString("kind"), it.optLong("version"))
+    }
+    override suspend fun memory(id: String): MemoryDetail = request("memory/${encode(id)}").let { row ->
+        MemoryDetail(MemoryItem(row.getString("id"), row.getString("text"), row.getString("kind"), row.getLong("version")),
+            row.getJSONArray("sources").objects().map { MemorySource(it.getString("id"), it.string("text"), it.string("at"), it.optBoolean("truncated")) })
+    }
+    override suspend fun saveContact(role: BotRole, archived: Boolean) {
+        request("contact", JSONObject().put("entryId", role.id).put("version", role.contactVersion).put("archived", archived))
     }
     private fun parsePersona(row: JSONObject) = PersonaSettings(row.getString("entryId"), row.getInt("revision"), row.getString("active"), row.getBoolean("contactEnabled"),
         row.getJSONArray("cards").objects().map { PersonaCard(it.getString("id"), it.getString("name"), it.optString("displayName", row.string("baseName")), it.getString("instructions"), it.optBoolean("inheritIdentity", true)) })

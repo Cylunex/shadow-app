@@ -71,4 +71,17 @@ class HttpProductApiTest {
         }
     }
 
+    @Test fun artifactDownloadChecksSizeDigestAndRejectsWithdrawal() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val api = HttpProductApi.fixture(server.url("/dsh/"))
+            val empty = Artifact("empty-file", "empty.txt", 0, "text/plain", true,
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", true)
+            server.enqueue(MockResponse().setBody("")); assertArrayEquals(byteArrayOf(), api.artifactContent(empty, "losna"))
+            assertEquals("/dsh/losna/agent/api/artifact-content/empty-file?entryId=losna", server.takeRequest().path)
+            server.enqueue(MockResponse().setBody("unexpected"))
+            try { api.artifactContent(empty, "losna"); fail("oversized content") } catch (_: IllegalArgumentException) { }
+            server.takeRequest(); server.enqueue(MockResponse().setResponseCode(404))
+            try { api.artifactContent(empty, "losna"); fail("withdrawn") } catch (error: ApiFailure) { assertEquals(404, error.status) }
+        }
+    }
 }
