@@ -46,6 +46,13 @@ const runtime = new Runtime({ store, memory: new Memory(store), config,
 store.put('sources', { id: 'fixture-evidence', person: 'owner', text: 'synthetic work request', state: 'processed' });
 store.put('work', { id: 'fixture-work', person: 'owner', entryId: 'losna', domain: 'general', workspace: 'scratch',
   goal: 'synthetic report', state: 'waiting', paused: true, sourceIds: ['fixture-evidence'], plan: [{ content: 'write report', status: 'pending' }] });
+if (process.argv[4] === 'memories') {
+  for (let n = 0; n < 123; n++) {
+    const id = `memory-source-${n}`;
+    store.put('sources', { id, person: 'owner', text: `synthetic memory evidence ${n}`, state: 'processed' });
+    runtime.memory.save('owner', { text: `合成茶饮偏好 ${n}`, kind: 'preference' }, [id]);
+  }
+}
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');

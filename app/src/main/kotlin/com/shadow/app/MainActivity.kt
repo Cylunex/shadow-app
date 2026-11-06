@@ -97,7 +97,8 @@ class MainActivity : ComponentActivity() {
     LaunchedEffect(state.bot.selected, state.bot.searchQuery) { searchListState.scrollToItem(0) }
     val role = state.bot.roles.find { it.id == state.bot.selected }
     val back = {
-        vm.navigate(when (state.destination) {
+        if (state.destination == Destination.Memories && state.bot.memoryBrowser.detail != null) vm.closeMemory()
+        else vm.navigate(when (state.destination) {
             Destination.MessageContext -> Destination.Search
             Destination.WorkDetail -> Destination.Progress
             Destination.ArtifactPreview -> Destination.WorkDetail

@@ -1,6 +1,6 @@
 # 协议与开发验证
 
-2026-11-06 增量：当前源码 0.11.0（21），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)、[人格卡文件](bot-persona-files.md)、[历史定位](bot-history-context.md)与[统一登录](bot-unified-login.md)。
+2026-11-06 增量：当前源码 0.12.0（22），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)、[人格卡文件](bot-persona-files.md)、[历史定位](bot-history-context.md)、[统一登录](bot-unified-login.md)与[记忆检索](bot-memory-browser.md)。
 
 ## 工程
 
@@ -36,7 +36,7 @@
 | POST roles | 新 Bot 联系人，客户端生成 `bot-UUID`；同 ID 同资料重试幂等 |
 | GET persona?entryId=… | 现有 Personas 权威的人格卡与 revision |
 | POST persona | 按 revision 保存人格；冲突刷新后处理，不盲目覆盖 |
-| GET memories | 当前本人最近 100 条有效共享记忆，仅返回 id / kind / text |
+| GET memories?query=…&kind=…&before=… | 本人有效记忆关键词／类型筛选与分页，支持 ifRevision 条件读取；详见记忆检索说明 |
 
 除附件二进制上传外，写入使用 JSON 与 `X-Losna-Request: 1`。服务端继续经过既有 DSH admission / Host / Origin 检查。新角色仅保存 id 与名字，复用主模型配置，QQ 禁用；不生成凭据、职业模板、独立主脑或记忆库。人格卡独立于 entry，会话 ID 不随卡片切换而变化。
 

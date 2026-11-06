@@ -131,14 +131,37 @@ class BotScreenTest {
     @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun memoryActionsStayInlineAndShowOriginalSources() {
         val vm = model()
         val item = MemoryItem("memory", "周末喜欢读历史书。", "preference", 2)
-        val state = ScreenState(bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "memoryActions"), destination = Destination.Memories,
-            memories = listOf(item), memoryDetail = MemoryDetail(item, listOf(MemorySource("source", "周末我想读一点历史。", "2026-11-06", false))))
+        val state = ScreenState(bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "memoryActions",
+            memoryBrowser = MemoryBrowserState(items = listOf(item), detail = MemoryDetail(item, listOf(MemorySource("source", "周末我想读一点历史。", "2026-11-06", false))))), destination = Destination.Memories)
         compose.setContent { BotTheme { BotScreen(state, vm) } }
         compose.onNodeWithText("更正").performClick()
         compose.onNodeWithText("保存更正").assertIsDisplayed()
         screenshot("memory-edit-320")
         compose.onNodeWithText("遗忘").performClick()
         compose.onNodeWithText("遗忘相关内容").assertIsDisplayed()
+    }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun memorySearchAndTypeFilterFitNarrowScreens() {
+        val vm = model()
+        val state = ScreenState(bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + setOf("memoryActions", "memoryBrowse"),
+            memoryBrowser = MemoryBrowserState(active = true, query = "茶", kind = "preference", loaded = true, revision = "r1", next = "next",
+                items = listOf(MemoryItem("tea", "周末读书时喜欢喝红茶。", "preference", 1)))), destination = Destination.Memories)
+        compose.setContent { BotTheme { BotScreen(state, vm) } }
+        compose.onNodeWithText("搜索全部有效记忆").assertIsDisplayed()
+        compose.onNodeWithText("周末读书时喜欢喝红茶。").assertIsDisplayed()
+        compose.onNodeWithText("加载更多记忆").performScrollTo().assertIsDisplayed()
+        screenshot("memory-search-320")
+        compose.onAllNodesWithText("偏好")[0].performClick()
+        compose.onNodeWithText("虚构情境").assertIsDisplayed()
+    }
+    @Test fun memoryEmptyAndLegacyStatesAreExplicit() {
+        val vm = model()
+        val state = mutableStateOf(ScreenState(bot = bot.copy(capabilities = bot.capabilities + "memoryBrowse",
+            memoryBrowser = MemoryBrowserState(active = true, query = "不存在", loaded = true)), destination = Destination.Memories))
+        compose.setContent { BotTheme { BotScreen(state.value, vm) } }
+        compose.onNodeWithText("没有找到相关记忆，试试其他关键词或类型。").assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(bot = bot.copy(memoryBrowser = MemoryBrowserState(active = true, loaded = true))) }
+        compose.onNodeWithText("当前服务显示最近 100 条有效记忆；升级服务后可搜索和翻页。").assertIsDisplayed()
+        compose.onNodeWithText("搜索全部有效记忆").assertDoesNotExist()
     }
     @Test fun archivedContactsDoNotDisappearAndSearchResultsShowFullText() {
         val vm = model()

@@ -18,6 +18,11 @@ data class Work(val id: String, val entryId: String, val goal: String, val state
 data class MemoryItem(val id: String, val text: String, val kind: String, val version: Long = 0)
 data class MemorySource(val id: String, val text: String, val at: String, val truncated: Boolean)
 data class MemoryDetail(val item: MemoryItem, val sources: List<MemorySource>)
+data class MemoryPage(val generation: String, val epoch: Long, val query: String, val kind: String,
+    val revision: String, val items: List<MemoryItem>, val next: String?, val unchanged: Boolean = false)
+data class MemoryBrowserState(val active: Boolean = false, val query: String = "", val kind: String = "",
+    val items: List<MemoryItem> = emptyList(), val next: String? = null, val revision: String? = null,
+    val detail: MemoryDetail? = null, val loading: Boolean = false, val loaded: Boolean = false, val error: String? = null)
 data class Handshake(val generation: String, val roles: List<BotRole>, val capabilities: Set<String>, val memoryEpoch: Long = 0)
 data class Snapshot(val generation: String, val conversationId: String, val messages: List<Message>, val works: List<Work>, val cursor: Long, val historyCursor: String? = null, val memoryEpoch: Long = 0)
 data class MessagePage(val generation: String, val entryId: String, val epoch: Long, val query: String, val items: List<Message>, val next: String?)

@@ -20,6 +20,16 @@ class BotRepositoryTest {
     }
     private class Api : ProductApi {
         var generation = "one"
+        var memoryBrowse = true
+        val memoryPages = java.util.ArrayDeque<MemoryPage>()
+        var memoryError: Exception? = null
+        var beforeMemories: suspend () -> Unit = {}
+        val memoryRequests = mutableListOf<Pair<String?, String?>>()
+        var memoryDetail = MemoryDetail(MemoryItem("a", "Tea", "preference", 1), emptyList())
+        override suspend fun memory(id: String): MemoryDetail { beforeMemories(); memoryError?.let { throw it }; return memoryDetail }
+        override suspend fun memoryPage(query: String, kind: String, before: String?, ifRevision: String?, limit: Int): MemoryPage {
+            memoryRequests.add(before to ifRevision); beforeMemories(); memoryError?.let { throw it }; return memoryPages.removeFirst()
+        }
         var handshakeError: Exception? = null
         var cursor = 0L
         var epoch = 0L
@@ -64,7 +74,7 @@ class BotRepositoryTest {
         override suspend fun handshake(): Handshake {
             handshakeError?.let { throw it }
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext"), epoch)
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + if (memoryBrowse) setOf("memoryBrowse") else emptySet(), epoch)
         }
         var beforeSnapshot: () -> Unit = {}
         override suspend fun snapshot(entryId: String): Snapshot {
@@ -346,6 +356,96 @@ class BotRepositoryTest {
         api.handshakeError = IOException("offline")
         val second = BotRepository(api, store); second.refresh()
         assertTrue(second.state.value.messages.isEmpty()); assertTrue(second.state.value.roles.isEmpty())
+    }
+
+    private fun memoryPage(ids: List<String> = listOf("a"), next: String? = "next", revision: String = "r1", query: String = "", kind: String = "") =
+        MemoryPage("one", 0, query, kind, revision, ids.map { MemoryItem(it, "Tea $it", "preference", 1) }, next)
+
+    @Test fun memoryPaginationKeepsAllPagesAndDetailDuringUnchangedRefresh() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna")
+        repo.beginMemories(); api.memoryPages.add(memoryPage()); repo.loadMemories()
+        api.memoryPages.add(memoryPage(listOf("b"), null)); repo.loadMemories(more = true)
+        repo.inspectMemory("a")
+        api.memoryPages.add(memoryPage(emptyList(), null).copy(unchanged = true)); repo.loadMemories(silent = true)
+        assertEquals(listOf("a", "b"), repo.state.value.memoryBrowser.items.map { it.id })
+        assertEquals("a", repo.state.value.memoryBrowser.detail?.item?.id)
+        assertEquals(listOf(null to null, "next" to null, null to "r1"), api.memoryRequests)
+        api.memoryPages.add(memoryPage(listOf("c"), null, "r2")); repo.loadMemories(silent = true)
+        assertEquals(listOf("c"), repo.state.value.memoryBrowser.items.map { it.id })
+        assertNull(repo.state.value.memoryBrowser.detail)
+    }
+    @Test fun memoryCursorConflictAndAuthorityChangeClearPreviouslyVisibleContent() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna")
+        repo.beginMemories(); api.memoryPages.add(memoryPage()); repo.loadMemories(); repo.inspectMemory("a")
+        api.memoryError = ApiFailure(409, "expired cursor"); repo.loadMemories(more = true)
+        assertTrue(repo.state.value.memoryBrowser.items.isEmpty()); assertNull(repo.state.value.memoryBrowser.detail)
+        assertNull(repo.state.value.memoryBrowser.next)
+        api.memoryError = null; api.memoryPages.add(memoryPage()); repo.loadMemories()
+        api.epoch++; repo.refresh()
+        assertTrue(repo.state.value.memoryBrowser.items.isEmpty())
+        api.memoryPages.add(memoryPage().copy(epoch = 1)); repo.loadMemories()
+        api.generation = "two"; repo.refresh()
+        assertTrue(repo.state.value.memoryBrowser.items.isEmpty())
+    }
+    @Test fun memoryLatePageCannotReviveClosedBrowserOrSupersededSearch() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna")
+        repo.beginMemories("Tea", "preference")
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        api.beforeMemories = { started.complete(Unit); release.await() }
+        api.memoryPages.add(memoryPage(query = "Tea", kind = "preference"))
+        val pending = async { repo.loadMemories() }; started.await()
+        repo.beginMemories("coffee", "episode"); release.complete(Unit); pending.await()
+        assertEquals("coffee", repo.state.value.memoryBrowser.query)
+        assertTrue(repo.state.value.memoryBrowser.items.isEmpty())
+        api.beforeMemories = { repo.clearMemories(close = true) }
+        api.memoryPages.add(memoryPage(query = "coffee", kind = "episode")); repo.loadMemories()
+        assertFalse(repo.state.value.memoryBrowser.active); assertTrue(repo.state.value.memoryBrowser.items.isEmpty())
+    }
+    @Test fun memoryLateDetailAndChangedLoginAreDiscarded() = runBlocking<Unit> {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginMemories()
+        api.memoryPages.add(memoryPage()); repo.loadMemories()
+        api.beforeMemories = { repo.closeMemoryDetail() }; repo.inspectMemory("a")
+        assertNull(repo.state.value.memoryBrowser.detail)
+        api.beforeMemories = { store.saved = store.saved.copy(session = Session("https://other.example.com/", emptyList())) }
+        api.memoryPages.add(memoryPage(listOf("private-new"))); repo.loadMemories()
+        assertEquals(listOf("a"), repo.state.value.memoryBrowser.items.map { it.id })
+    }
+    @Test fun memoryNetworkRetryPreservesPositionButForbiddenClearsAllContent() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginMemories()
+        api.memoryPages.add(memoryPage()); repo.loadMemories(); repo.inspectMemory("a")
+        api.memoryError = IOException("offline"); repo.loadMemories(more = true)
+        assertEquals("a", repo.state.value.memoryBrowser.items.single().id)
+        assertEquals("next", repo.state.value.memoryBrowser.next); assertNotNull(repo.state.value.memoryBrowser.error)
+        api.memoryError = ApiFailure(403, "forbidden"); repo.loadMemories(silent = true)
+        assertTrue(repo.state.value.memoryBrowser.items.isEmpty()); assertNull(repo.state.value.memoryBrowser.detail)
+    }
+    @Test fun oldMemoryServiceUsesLegacyListWithoutCallingBrowseProtocol() = runBlocking<Unit> {
+        val api = Api(); api.memoryBrowse = false
+        val repo = BotRepository(api, Store()); repo.refresh(); repo.beginMemories(); repo.loadMemories()
+        assertTrue(repo.state.value.memoryBrowser.loaded); assertTrue(api.memoryRequests.isEmpty())
+    }
+
+    @Test fun memoryPaginationCannotReopenDismissedDetailAndBackgroundClearsRequests() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginMemories()
+        api.memoryPages.add(memoryPage()); repo.loadMemories(); repo.inspectMemory("a")
+        api.beforeMemories = { repo.closeMemoryDetail() }
+        api.memoryPages.add(memoryPage(listOf("b"), null)); repo.loadMemories(more = true)
+        assertNull(repo.state.value.memoryBrowser.detail)
+        assertEquals(listOf("a", "b"), repo.state.value.memoryBrowser.items.map { it.id })
+        api.beforeMemories = { repo.clearMemories(close = true) }
+        api.memoryPages.add(memoryPage(listOf("c"))); repo.loadMemories(silent = true)
+        assertFalse(repo.state.value.memoryBrowser.active); assertTrue(repo.state.value.memoryBrowser.items.isEmpty())
+        assertFalse(repo.state.value.memoryBrowser.loading)
+    }
+    @Test fun memoryDetailNetworkFailureIsVisibleAndMissingMemoryClearsList() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginMemories()
+        api.memoryPages.add(memoryPage()); repo.loadMemories()
+        api.memoryError = IOException("offline"); repo.inspectMemory("a")
+        assertNotNull(repo.state.value.memoryBrowser.error); assertFalse(repo.state.value.memoryBrowser.loading)
+        assertEquals("a", repo.state.value.memoryBrowser.items.single().id)
+        api.memoryError = ApiFailure(404, "forgotten"); repo.inspectMemory("a")
+        assertTrue(repo.state.value.memoryBrowser.items.isEmpty()); assertNull(repo.state.value.memoryBrowser.detail)
+        assertNotNull(repo.state.value.memoryBrowser.error)
     }
 
 }

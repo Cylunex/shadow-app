@@ -16,6 +16,7 @@ data class BotState(
     val syncIssue: String? = null, val offline: Boolean = false, val cachedAt: Long = 0, val historyCursor: String? = null, val historyBusy: Boolean = false,
     val liveReply: LiveReply? = null, val searchQuery: String = "", val searchResults: List<Message> = emptyList(), val searchCursor: String? = null, val searchDone: Boolean = false,
     val messageContext: MessageContextPage? = null, val contextBusy: Boolean = false, val contextError: String? = null,
+    val memoryBrowser: MemoryBrowserState = MemoryBrowserState(),
 )
 
 /** Serializes user writes with snapshot/event refresh; cursors are never shared between contacts. */
@@ -35,6 +36,88 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private var openWorkId: String? = null
     private var openArtifactId: String? = null
     private var contextRequest = 0L
+    private var memoryRequest = 0L
+    private var memoryDetailRequest = 0L
+
+    fun clearMemories(close: Boolean = false) {
+        memoryRequest++; memoryDetailRequest++
+        val old = mutable.value.memoryBrowser
+        mutable.value = mutable.value.copy(memoryBrowser = MemoryBrowserState(active = !close && old.active, query = old.query, kind = old.kind))
+    }
+    fun beginMemories(query: String = "", kind: String = "") {
+        clearMemories()
+        mutable.value = mutable.value.copy(memoryBrowser = MemoryBrowserState(active = true, query = query.trim(), kind = kind))
+    }
+    fun closeMemoryDetail() {
+        memoryDetailRequest++
+        mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(detail = null))
+    }
+    suspend fun inspectMemory(id: String) {
+        closeMemoryDetail()
+        val request = memoryRequest; val detailRequest = memoryDetailRequest
+        operation(silent = true) {
+            if (!mutable.value.memoryBrowser.active || request != memoryRequest || detailRequest != memoryDetailRequest) return@operation
+            mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(loading = true, error = null))
+            try {
+                val detail = api.memory(id)
+                if (currentSession() && request == memoryRequest && detailRequest == memoryDetailRequest)
+                    mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(detail = detail, error = null))
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (!currentSession() || request != memoryRequest || detailRequest != memoryDetailRequest) return@operation
+                if (error is ApiFailure && error.status in setOf(401, 403)) throw error
+                if (error is ApiFailure && error.status in setOf(404, 409)) {
+                    clearMemories()
+                    mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(error = "记忆已更新，请重新读取。"))
+                } else mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(error = "暂时无法读取来源，请重试。"))
+            } finally {
+                if (request == memoryRequest) mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(loading = false))
+            }
+        }
+    }
+    suspend fun loadMemories(more: Boolean = false, silent: Boolean = false) {
+        val request = memoryRequest
+        operation(silent = true) {
+            val old = mutable.value.memoryBrowser
+            if (!old.active || request != memoryRequest || mutable.value.needsLogin || "memories" !in mutable.value.capabilities) return@operation
+            val browsing = "memoryBrowse" in mutable.value.capabilities
+            if (more && (!browsing || old.next == null || old.items.size >= 600)) return@operation
+            mutable.value = mutable.value.copy(memoryBrowser = old.copy(loading = !silent, error = null))
+            try {
+                require(old.query.length <= 200) { "搜索词不能超过 200 字。" }
+                val page = if (browsing) api.memoryPage(old.query, old.kind, if (more) old.next else null,
+                    if (silent && !more) old.revision else null, minOf(50, 600 - if (more) old.items.size else 0)) else null
+                val legacy = if (!browsing) api.memories() else emptyList()
+                if (!currentSession() || request != memoryRequest) return@operation
+                if (page != null) {
+                    check(page.query == old.query && page.kind == old.kind)
+                    if (page.generation != generation || page.epoch != memoryEpoch || more && page.revision != old.revision)
+                        throw ApiFailure(409, "记忆已更新，请重新读取。")
+                    if (page.unchanged) {
+                        check(silent && !more && page.revision == old.revision)
+                    } else {
+                        if (!more) memoryDetailRequest++
+                        mutable.value = mutable.value.copy(memoryBrowser = old.copy(
+                            items = (if (more) old.items + page.items else page.items).distinctBy { it.id }, next = page.next,
+                            revision = page.revision, detail = if (more) mutable.value.memoryBrowser.detail else null, loaded = true, error = null))
+                    }
+                } else mutable.value = mutable.value.copy(memoryBrowser = old.copy(items = legacy, loaded = true,
+                    detail = mutable.value.memoryBrowser.detail?.takeIf { detail -> legacy.any { it.id == detail.item.id && it.version == detail.item.version } }, error = null))
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (!currentSession() || request != memoryRequest) return@operation
+                if (error is ApiFailure && error.status in setOf(401, 403)) throw error
+                if (error is ApiFailure && error.status == 409) {
+                    clearMemories()
+                    mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(error = "记忆已更新，请重新读取。"))
+                    refreshLocked()
+                } else mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(
+                    error = if (error is ApiFailure || error is IllegalArgumentException) error.message else "暂时无法读取记忆，请重试。"))
+            } finally {
+                if (request == memoryRequest) mutable.value = mutable.value.copy(memoryBrowser = mutable.value.memoryBrowser.copy(loading = false))
+            }
+        }
+    }
 
     fun clearMessageContext() {
         contextRequest++
@@ -94,6 +177,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             mutable.value = mutable.value.copy(liveReply = null)
             val expired = error is ApiFailure && error.status == 401
             if (error is ApiFailure && error.status in setOf(401, 403)) {
+                clearMemories()
                 clearMessageContext()
                 store.clearCache(); olderMessages = emptyList(); olderCursor = null
                 mutable.value = mutable.value.copy(messages = emptyList(), roles = emptyList(), works = emptyList(), searchResults = emptyList(), searchCursor = null, historyCursor = null, workDetail = null, artifactText = null)
@@ -112,6 +196,8 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun refreshLocked(refreshDetails: Boolean = true) {
         val hello = api.handshake()
         if (!currentSession()) return
+        if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "memories" !in hello.capabilities ||
+            ("memoryBrowse" in mutable.value.capabilities) != ("memoryBrowse" in hello.capabilities)) clearMemories()
         if (generation != null && generation != hello.generation) {
             clearMessageContext()
             mutable.value = mutable.value.copy(searchResults = emptyList(), searchCursor = null, searchDone = false)
@@ -149,6 +235,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             nextCursor = snapshot.cursor
             // Replace authoritative content, including withdrawals, in one publication.
             if (memoryEpoch != snapshot.memoryEpoch || generation != hello.generation) {
+                clearMemories()
                 clearMessageContext()
                 olderMessages = emptyList(); olderCursor = snapshot.historyCursor
                 mutable.value = mutable.value.copy(liveReply = null)
@@ -163,6 +250,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         }
         if (!currentSession()) return
         generation = hello.generation
+        if (selected == null) memoryEpoch = hello.memoryEpoch
         cursor = nextCursor
         mutable.value = mutable.value.copy(connected = true, needsLogin = false, roles = roles,
             capabilities = hello.capabilities, selected = selected, messages = messages, works = works, historyCursor = olderCursor, syncIssue = null, offline = false, cachedAt = 0)
@@ -180,6 +268,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     }
     suspend fun refresh(silent: Boolean = false) = operation(silent = silent && mutable.value.connected) { refreshLocked() }
     suspend fun select(entryId: String?) = operation {
+        clearMemories(close = true)
         clearMessageContext()
         require(entryId == null || mutable.value.roles.any { it.id == entryId })
         mutable.value = mutable.value.copy(selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null)
@@ -353,6 +442,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun <T> guardedRead(block: suspend () -> T): T = mutex.withLock {
         try { block() } catch (error: ApiFailure) {
             if (error.status in setOf(401, 403)) {
+                clearMemories()
                 clearMessageContext()
                 store.clearCache(); olderMessages = emptyList(); olderCursor = null
                 mutable.value = mutable.value.copy(needsLogin = error.status == 401, messages = emptyList(), roles = emptyList(), works = emptyList(),

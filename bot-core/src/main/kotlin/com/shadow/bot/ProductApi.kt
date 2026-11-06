@@ -36,6 +36,8 @@ interface ProductApi {
     suspend fun saveContact(role: BotRole, archived: Boolean) { throw ApiFailure(503, "当前服务尚未开放联系人归档。") }
     suspend fun memory(id: String): MemoryDetail = throw ApiFailure(503, "当前服务尚未开放记忆详情。")
     suspend fun memories(): List<MemoryItem>
+    suspend fun memoryPage(query: String = "", kind: String = "", before: String? = null, ifRevision: String? = null, limit: Int = 50): MemoryPage =
+        throw ApiFailure(503, "当前服务尚未开放记忆检索。")
 }
 
 fun interface BearerTokens { suspend fun token(): String }
@@ -172,6 +174,14 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
             .put("instructions", it.instructions).put("inheritIdentity", it.inheritIdentity) }))))
     override suspend fun memories(): List<MemoryItem> = request("memories").getJSONArray("items").objects().map {
         MemoryItem(it.getString("id"), it.getString("text"), it.getString("kind"), it.optLong("version"))
+    }
+    override suspend fun memoryPage(query: String, kind: String, before: String?, ifRevision: String?, limit: Int): MemoryPage {
+        val row = request("memories?query=${encode(query)}&kind=${encode(kind)}&limit=$limit" +
+            (before?.let { "&before=${encode(it)}" } ?: "") + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: ""))
+        return MemoryPage(row.getString("generation"), row.getLong("epoch"), row.getString("query"), row.getString("kind"),
+            row.getString("revision"), row.getJSONArray("items").objects().map {
+                MemoryItem(it.getString("id"), it.getString("text"), it.getString("kind"), it.getLong("version"))
+            }, row.string("next").takeIf(String::isNotEmpty), row.optBoolean("unchanged"))
     }
     override suspend fun memory(id: String): MemoryDetail = request("memory/${encode(id)}").let { row ->
         MemoryDetail(MemoryItem(row.getString("id"), row.getString("text"), row.getString("kind"), row.getLong("version")),

@@ -87,6 +87,36 @@ class LosnaIntegrationTest {
             if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
         }
     }
+    @Test fun browsesAndCorrectsSharedMemoriesThroughActualProductHttp() = runBlocking<Unit> {
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "memories")
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val api = HttpProductApi.fixture(process.inputStream.bufferedReader().readLine().toHttpUrl())
+            val hello = api.handshake(); assertTrue("memoryBrowse" in hello.capabilities)
+            val first = api.memoryPage(query = "茶饮", kind = "preference", limit = 50)
+            assertEquals(50, first.items.size); assertNotNull(first.next)
+            val second = api.memoryPage(query = "茶饮", kind = "preference", before = first.next, limit = 50)
+            val third = api.memoryPage(query = "茶饮", kind = "preference", before = second.next, limit = 50)
+            assertEquals(123, (first.items + second.items + third.items).map { it.id }.toSet().size)
+            assertNull(third.next)
+            assertTrue(api.memoryPage(query = "茶饮", kind = "preference", ifRevision = first.revision).unchanged)
+            val target = first.items.first(); val detail = api.memory(target.id)
+            assertEquals(target, detail.item); assertTrue(detail.sources.single().text.startsWith("synthetic memory evidence"))
+            api.send(PendingCommand(UUID.randomUUID().toString(), "losna", "改为合成咖啡偏好", 1,
+                action = "memory.correct", memoryId = target.id, expectedVersion = target.version), hello.generation)
+            try { api.memoryPage(query = "茶饮", kind = "preference", before = first.next); fail("stale memory cursor") }
+            catch (error: ApiFailure) { assertEquals(409, error.status) }
+            val corrected = api.memoryPage(query = "咖啡", kind = "preference").items.single()
+            assertNotEquals(target.id, corrected.id)
+            api.send(PendingCommand(UUID.randomUUID().toString(), "losna", "", 2,
+                action = "memory.forget", memoryId = corrected.id, expectedVersion = corrected.version), hello.generation)
+            assertTrue(api.memoryPage(query = "咖啡").items.isEmpty())
+            assertTrue(api.memoryPage(query = "茶饮", ifRevision = first.revision).items.none { it.id == target.id })
+        } finally {
+            process.outputStream.close()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
+        }
+    }
     @Test fun attachmentsTravelThroughLifeSkillAndActualProductHttp() = runBlocking<Unit> {
         val lifeRepo = System.getProperty("lifeRepo")
         org.junit.Assume.assumeNotNull(lifeRepo)

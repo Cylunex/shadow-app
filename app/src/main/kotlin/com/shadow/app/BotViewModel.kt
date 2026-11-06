@@ -32,7 +32,7 @@ data class AttachmentPreviewData(val attachment: Attachment, val bytes: ByteArra
 data class ScreenState(val bot: BotState = BotState(), val destination: Destination = Destination.Conversations,
     val baseUrl: String = "", val loginName: String? = null, val connecting: Boolean = false, val notice: String? = null,
     val drafts: Map<String, String> = emptyMap(), val workDrafts: Map<String, String> = emptyMap(), val sharedText: String? = null, val viewedWorkId: String? = null, val viewedArtifactId: String? = null,
-    val persona: PersonaSettings? = null, val personaDraft: PersonaSettings? = null, val memories: List<MemoryItem> = emptyList(), val storageError: Boolean = false, val memoryDetail: MemoryDetail? = null,
+    val persona: PersonaSettings? = null, val personaDraft: PersonaSettings? = null, val storageError: Boolean = false,
     val attachmentDrafts: Map<String, List<AttachmentDraft>> = emptyMap(), val sharedUris: List<String> = emptyList(),
     val attachmentPreview: AttachmentPreviewData? = null, val attachmentLoading: Boolean = false, val speaking: Boolean = false)
 
@@ -85,17 +85,16 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     private fun attach(api: HttpProductApi, baseUrl: String) {
         val saved = store.read()
         uploads.values.forEach { it.cancel() }; uploads.clear()
-        polling?.cancel(); collector?.cancel()
+        polling?.cancel(); collector?.cancel(); repository?.clearMemories(close = true)
         val repo = BotRepository(api, store); repository = repo
-        mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, memories = emptyList(), memoryDetail = null, viewedWorkId = null, viewedArtifactId = null,
+        mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, viewedWorkId = null, viewedArtifactId = null,
             drafts = saved.drafts, workDrafts = saved.workDrafts,
             attachmentDrafts = saved.attachmentDrafts.mapValues { (_, drafts) -> drafts.map { if (it.uploaded != null) it else it.copy(status = "failed", error = "连接已恢复，请重试上传。") } },
             attachmentPreview = null)
         collector = viewModelScope.launch { repo.state.collect { bot ->
             if (spokenText != null && bot.messages.none { it.text == spokenText }) stopSpeaking()
             val current = mutable.value.copy(bot = bot)
-            mutable.value = current.copy(attachmentPreview = current.attachmentPreview?.takeIf { !bot.needsLogin && visibleAttachment(current, it.attachment.id, bot.selected) },
-                memories = if (bot.needsLogin) emptyList() else current.memories, memoryDetail = if (bot.needsLogin) null else current.memoryDetail)
+            mutable.value = current.copy(attachmentPreview = current.attachmentPreview?.takeIf { !bot.needsLogin && visibleAttachment(current, it.attachment.id, bot.selected) })
         } }
         viewModelScope.launch { repo.refresh() }
         startPolling()
@@ -180,10 +179,14 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         BackgroundChecks.foreground = active
         if (active && !mutable.value.connecting) {
             viewModelScope.launch { repository?.refresh(silent = true) }
-            if (mutable.value.destination == Destination.Memories) loadMemories()
+            if (mutable.value.destination == Destination.Memories) {
+                val browser = repository?.state?.value?.memoryBrowser
+                if (browser != null && !browser.active) repository?.beginMemories(browser.query, browser.kind)
+                viewModelScope.launch { repository?.loadMemories(silent = true) }
+            }
             startPolling()
         }
-        else { polling?.cancel(); polling = null; detailLoad?.cancel(); mutable.value = mutable.value.copy(memories = emptyList(), memoryDetail = null) }
+        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true) }
     }
     private fun startPolling() {
         polling?.cancel()
@@ -193,7 +196,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 delay(if (mutable.value.bot.selected != null && "liveReplies" in mutable.value.bot.capabilities) 1000 else 4000)
                 if (!mutable.value.bot.needsLogin) {
                     repository?.poll()
-                    if (mutable.value.destination == Destination.Memories) loadMemories()
+                    if (mutable.value.destination == Destination.Memories) repository?.loadMemories(silent = true)
                 }
             }
         }
@@ -278,23 +281,26 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (destination != Destination.MessageContext) repository?.clearMessageContext()
         if (destination == Destination.WorkDetail) viewModelScope.launch { repository?.closeArtifact() }
         if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) viewModelScope.launch { repository?.closeWork() }
-        mutable.value = mutable.value.copy(destination = destination, notice = null, persona = null, personaDraft = null, memories = emptyList(), memoryDetail = null, attachmentPreview = null, attachmentLoading = false)
+        mutable.value = mutable.value.copy(destination = destination, notice = null, persona = null, personaDraft = null, attachmentPreview = null, attachmentLoading = false)
         if (destination == Destination.Conversations) viewModelScope.launch { repository?.select(null) }
-        if (destination == Destination.Memories) loadMemories()
+        repository?.clearMemories(close = true)
+        if (destination == Destination.Memories) searchMemories("", "")
         if (destination == Destination.Persona) mutable.value.bot.selected?.let { id -> load { val value = repository?.persona(id); mutable.value = mutable.value.copy(persona = value, personaDraft = value) } }
     }
-    fun inspectMemory(id: String) = load {
-        mutable.value = mutable.value.copy(memoryDetail = null)
-        val detail = repository?.memory(id)
-        if (mutable.value.destination == Destination.Memories) mutable.value = mutable.value.copy(memoryDetail = detail)
+    fun inspectMemory(id: String) { viewModelScope.launch { repository?.inspectMemory(id) } }
+    fun closeMemory() { repository?.closeMemoryDetail() }
+    fun searchMemories(query: String, kind: String) {
+        repository?.beginMemories(query, kind)
+        viewModelScope.launch { repository?.loadMemories() }
     }
-    fun closeMemory() { detailLoad?.cancel(); mutable.value = mutable.value.copy(memoryDetail = null) }
+    fun moreMemories() { viewModelScope.launch { repository?.loadMemories(more = true) } }
+    fun reloadMemories() { viewModelScope.launch { repository?.loadMemories() } }
     fun editMemory(item: MemoryItem, action: String, text: String) {
         if (mutation?.isActive == true) return
         mutation = viewModelScope.launch {
             if (repository?.submitMemory(item, action, text) == true) {
-                mutable.value = mutable.value.copy(memoryDetail = null)
-                loadMemories()
+                repository?.clearMemories()
+                repository?.loadMemories()
             }
         }
     }
@@ -305,11 +311,6 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
             repository?.archiveContact(role, !role.archived)
             if (repository?.state?.value?.error == null) navigate(Destination.Conversations)
         }
-    }
-    private fun loadMemories() = load {
-        val rows = repository?.memories().orEmpty()
-        if (mutable.value.destination == Destination.Memories && foreground) mutable.value = mutable.value.copy(memories = rows,
-            memoryDetail = mutable.value.memoryDetail?.takeIf { detail -> rows.any { it.id == detail.item.id && it.version == detail.item.version } })
     }
     private fun load(block: suspend () -> Unit) {
         detailLoad?.cancel()
