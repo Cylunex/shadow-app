@@ -24,6 +24,7 @@ sealed interface Destination {
     data object ArtifactPreview : Destination
     data object Progress : Destination
     data object Memories : Destination
+    data object Browser : Destination
     data object Commitments : Destination
     data object Growth : Destination
     data object Persona : Destination
@@ -89,7 +90,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         val saved = store.read()
         uploads.values.forEach { it.cancel() }; uploads.clear()
         polling?.cancel(); collector?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true)
-        repository?.clearCommitments(close = true)
+        repository?.clearBrowser(close = true); repository?.clearCommitments(close = true)
         repository?.clearGrowth(close = true)
         val repo = BotRepository(api, store); repository = repo
         mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, viewedWorkId = null, viewedArtifactId = null,
@@ -190,11 +191,12 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 viewModelScope.launch { repository?.loadMemories(silent = true) }
             }
             if (mutable.value.destination == Destination.Progress) openWorks()
+            if (mutable.value.destination == Destination.Browser) openBrowser()
             if (mutable.value.destination == Destination.Commitments) openCommitments()
             if (mutable.value.destination == Destination.Growth) openGrowth()
             startPolling()
         }
-        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true); repository?.clearGrowth(close = true); repository?.clearCommitments(close = true) }
+        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true); repository?.clearGrowth(close = true); repository?.clearBrowser(close = true); repository?.clearCommitments(close = true) }
     }
     private fun startPolling() {
         polling?.cancel()
@@ -206,6 +208,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                     repository?.poll()
                     if (mutable.value.destination == Destination.Memories) repository?.loadMemories(silent = true)
                     if (mutable.value.destination == Destination.Progress) repository?.loadWorks(silent = true)
+                    if (mutable.value.destination == Destination.Browser) repository?.loadBrowser(silent = true)
                     if (mutable.value.destination == Destination.Commitments) repository?.loadCommitments(silent = true)
                     if (mutable.value.destination == Destination.Growth) repository?.loadGrowth(silent = true)
                 }
@@ -261,7 +264,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissShare() { mutable.value = mutable.value.copy(sharedText = null, sharedUris = emptyList()) }
     fun openWork(id: String) {
         if (mutable.value.connecting) return
-        mutable.value = mutable.value.copy(viewedWorkId = id, viewedArtifactId = null, workOrigin = if (mutable.value.destination == Destination.Commitments) Destination.Commitments else Destination.Progress)
+        mutable.value = mutable.value.copy(viewedWorkId = id, viewedArtifactId = null, workOrigin = when (mutable.value.destination) { Destination.Commitments -> Destination.Commitments; Destination.Browser -> Destination.Browser; else -> Destination.Progress })
         navigate(Destination.WorkDetail)
         viewModelScope.launch { repository?.openWork(id) }
     }
@@ -298,15 +301,31 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (destination == Destination.Memories) searchMemories("", "")
         if (destination == Destination.Progress) openWorks()
         else if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) repository?.clearWorks(close = true)
-        if (destination == Destination.Commitments) openCommitments() else repository?.clearCommitments(close = true)
+        if (destination == Destination.Browser) openBrowser() else repository?.clearBrowser(close = true)
+        if (destination == Destination.Commitments) openCommitments()
+        else if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) repository?.clearCommitments(close = true)
         if (destination == Destination.Growth) openGrowth() else repository?.clearGrowth(close = true)
         if (destination == Destination.Persona) mutable.value.bot.selected?.let { id -> load { val value = repository?.persona(id); mutable.value = mutable.value.copy(persona = value, personaDraft = value) } }
     }
     fun inspectMemory(id: String) { viewModelScope.launch { repository?.inspectMemory(id) } }
-    private fun openCommitments() {
-        if (repository?.state?.value?.commitments?.active != true) repository?.beginCommitments()
-        viewModelScope.launch { repository?.loadCommitments() }
+    private fun openBrowser() {
+        if (repository?.state?.value?.browser?.active != true) repository?.beginBrowser()
+        viewModelScope.launch { repository?.loadBrowser() }
     }
+    fun reloadBrowser() { viewModelScope.launch { repository?.loadBrowser() } }
+    fun inspectBrowser(session: BrowserSession) { viewModelScope.launch { repository?.inspectBrowser(session) } }
+    fun actBrowser(view: BrowserView, action: String, ref: String? = null, text: String? = null) {
+        viewModelScope.launch { repository?.actBrowser(view, action, ref, text); repository?.loadBrowser() }
+    }
+    private fun openCommitments() {
+        val old = repository?.state?.value?.commitments
+        if (old?.active != true) repository?.beginCommitments(old?.query.orEmpty(), old?.status ?: "ongoing")
+        viewModelScope.launch { repository?.loadCommitments(silent = old?.page != null) }
+    }
+    fun searchCommitments(query: String, status: String) {
+        repository?.beginCommitments(query, status); viewModelScope.launch { repository?.loadCommitments() }
+    }
+    fun moreCommitments() { viewModelScope.launch { repository?.loadCommitments(more = true) } }
     fun reloadCommitments() { viewModelScope.launch { repository?.loadCommitments() } }
     fun commitmentDraft(id: String, text: String) {
         saveDrafts(mutable.value.copy(commitmentDrafts = mutable.value.commitmentDrafts + (id to text)))

@@ -19,6 +19,7 @@ data class BotState(
     val memoryBrowser: MemoryBrowserState = MemoryBrowserState(),
     val workBrowser: WorkBrowserState = WorkBrowserState(),
     val growth: GrowthState = GrowthState(),
+    val browser: BrowserHandoffState = BrowserHandoffState(),
     val commitments: CommitmentState = CommitmentState(),
 )
 
@@ -44,29 +45,121 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private var workRequest = 0L
     private var commitmentRequest = 0L
 
+    private var browserRequest = 0L
+    fun clearBrowser(close: Boolean = false) {
+        browserRequest++
+        mutable.value = mutable.value.copy(browser = BrowserHandoffState(active = !close && mutable.value.browser.active))
+    }
+    fun beginBrowser() {
+        clearBrowser()
+        mutable.value = mutable.value.copy(browser = BrowserHandoffState(active = true))
+    }
+    private fun checkBrowser(entry: String, host: String, epoch: Long) {
+        check(entry == mutable.value.selected)
+        if (host != generation || epoch != memoryEpoch) throw ApiFailure(409, "页面所属服务或来源已变化，请重新读取。")
+    }
+    suspend fun loadBrowser(silent: Boolean = false) {
+        val request = browserRequest
+        val entry = mutable.value.selected ?: return
+        operation(silent = true) {
+            val old = mutable.value.browser
+            if (!old.active || request != browserRequest || mutable.value.needsLogin || "browserHandoff" !in mutable.value.capabilities) return@operation
+            mutable.value = mutable.value.copy(browser = old.copy(loading = !silent, error = null))
+            try {
+                val page = api.browserSessions(entry)
+                if (!currentSession() || request != browserRequest || entry != mutable.value.selected) return@operation
+                checkBrowser(page.entryId, page.generation, page.epoch)
+                check(page.items.all { it.entryId == entry })
+                val view = old.view?.takeIf { v -> page.items.any { it.id == v.sessionId && it.workId == v.workId && it.version == v.version } }
+                mutable.value = mutable.value.copy(browser = old.copy(sessions = page.items, view = view, loaded = true, loading = false, error = null))
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { browserFailure(error, request) }
+            finally { if (request == browserRequest) mutable.value = mutable.value.copy(browser = mutable.value.browser.copy(loading = false)) }
+        }
+    }
+    private suspend fun browserFailure(error: Exception, request: Long, mutation: Boolean = false) {
+        if (!currentSession() || request != browserRequest) return
+        mutable.value = mutable.value.copy(browser = mutable.value.browser.copy(view = null, sessions = emptyList(), loaded = false, loading = false,
+            error = if (mutation) "未能确认操作结果。请重新查看页面核对，不要重复点击。" else "页面暂不可用或已变化，请重新读取接手列表。"))
+        if (error is ApiFailure && error.status in setOf(401, 403)) throw error
+        if (error is ApiFailure && error.status == 409) refreshLocked()
+    }
+    suspend fun inspectBrowser(session: BrowserSession) {
+        val request = browserRequest
+        operation(silent = true) {
+            val old = mutable.value.browser
+            if (!old.active || request != browserRequest || session !in old.sessions || session.entryId != mutable.value.selected || mutable.value.needsLogin) return@operation
+            mutable.value = mutable.value.copy(browser = old.copy(view = null, loading = true, error = null))
+            try {
+                val view = api.browser(session.entryId, requireNotNull(generation), session.id, session.version, "inspect")
+                if (!currentSession() || request != browserRequest) return@operation
+                checkBrowser(view.entryId, view.generation, view.epoch)
+                check(view.sessionId == session.id && view.workId == session.workId && view.state == "handoff" && view.version != null)
+                mutable.value = mutable.value.copy(browser = old.copy(view = view, loading = false, error = null,
+                    sessions = old.sessions.map { if (it.id == session.id) it.copy(version = view.version) else it }))
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { browserFailure(error, request) }
+            finally { if (request == browserRequest) mutable.value = mutable.value.copy(browser = mutable.value.browser.copy(loading = false)) }
+        }
+    }
+    suspend fun actBrowser(view: BrowserView, action: String, ref: String? = null, text: String? = null) {
+        val request = browserRequest
+        operation(silent = true) {
+            val old = mutable.value.browser
+            if (!old.active || request != browserRequest || old.view != view || view.entryId != mutable.value.selected || mutable.value.needsLogin) return@operation
+            require(action in setOf("fill", "click", "resume"))
+            if (action != "resume") {
+                val control = view.controls.single { it.ref == ref }
+                require(!control.disabled && (action != "fill" || control.fillable && text != null && text.length <= 10000))
+            }
+            // One dispatch only; no persisted payload, automatic retry or replacement id.
+            mutable.value = mutable.value.copy(browser = old.copy(view = null, loading = true, error = null, notice = null))
+            try {
+                val result = api.browser(view.entryId, view.generation, view.sessionId, requireNotNull(view.version), action, UUID.randomUUID().toString(), ref, text)
+                if (!currentSession() || request != browserRequest) return@operation
+                checkBrowser(result.entryId, result.generation, result.epoch)
+                check(result.sessionId == view.sessionId && result.workId == view.workId)
+                mutable.value = mutable.value.copy(browser = mutable.value.browser.copy(sessions = emptyList(), loaded = false, followupWorkId = view.workId,
+                    notice = when {
+                        result.state == "unknown" -> "操作结果未知。请重新查看页面核对，不要重复点击。"
+                        action == "resume" -> "已交回浏览器。需要继续执行时，请打开原事项接着做。"
+                        else -> "操作已提交，请重新查看页面核对结果。"
+                    }))
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { browserFailure(error, request, mutation = true) }
+            finally { if (request == browserRequest) mutable.value = mutable.value.copy(browser = mutable.value.browser.copy(loading = false)) }
+        }
+    }
+
     fun clearCommitments(close: Boolean = false) {
         commitmentRequest++
-        mutable.value = mutable.value.copy(commitments = CommitmentState(active = !close && mutable.value.commitments.active))
+        mutable.value = mutable.value.copy(commitments = CommitmentState(active = !close && mutable.value.commitments.active, query = mutable.value.commitments.query, status = mutable.value.commitments.status))
     }
-    fun beginCommitments() {
+    fun beginCommitments(query: String = "", status: String = "ongoing") {
         clearCommitments()
-        mutable.value = mutable.value.copy(commitments = CommitmentState(active = true))
+        mutable.value = mutable.value.copy(commitments = CommitmentState(active = true, query = query.trim(), status = status))
     }
-    suspend fun loadCommitments(silent: Boolean = false) {
+    suspend fun loadCommitments(silent: Boolean = false, more: Boolean = false) {
         val request = commitmentRequest
         val entry = mutable.value.selected ?: return
         operation(silent = true) {
             val old = mutable.value.commitments
             if (!old.active || request != commitmentRequest || entry != mutable.value.selected || mutable.value.needsLogin || "commitmentDetails" !in mutable.value.capabilities) return@operation
+            val browse = "commitmentBrowse" in mutable.value.capabilities
+            if (more && (!browse || old.page?.next == null || old.page.items.size >= 600)) return@operation
             mutable.value = mutable.value.copy(commitments = old.copy(loading = !silent, error = null))
             try {
-                val page = api.commitments(entry, if (silent) old.page?.revision else null)
+                val page = if (browse) api.commitmentPage(entry, old.query, old.status, if (more) old.page?.next else null,
+                    if (silent && !more) old.page?.revision else null, minOf(50, 600 - if (more) old.page?.items?.size ?: 0 else 0))
+                    else api.commitments(entry, if (silent) old.page?.revision else null)
                 if (!currentSession() || request != commitmentRequest || entry != mutable.value.selected) return@operation
                 check(page.entryId == entry)
                 if (page.generation != generation || page.epoch != memoryEpoch) throw ApiFailure(409, "持续事项已变化，正在重新读取。")
                 check(page.items.all { it.entryId == entry })
-                if (page.unchanged) check(silent && old.page != null && page.revision == old.page.revision)
-                else mutable.value = mutable.value.copy(commitments = old.copy(page = page, error = null))
+                if (browse) check(page.query == old.query && page.status == old.status)
+                if (more && page.revision != old.page?.revision) throw ApiFailure(409, "持续事项已变化，请重新读取。")
+                if (page.unchanged) check(silent && !more && old.page != null && page.revision == old.page.revision)
+                else mutable.value = mutable.value.copy(commitments = old.copy(page = if (more) page.copy(items = (old.page!!.items + page.items).distinctBy { it.id }) else page, error = null))
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {
                 if (!currentSession() || request != commitmentRequest || entry != mutable.value.selected) return@operation
@@ -307,6 +400,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             mutable.value = mutable.value.copy(liveReply = null)
             val expired = error is ApiFailure && error.status == 401
             if (error is ApiFailure && error.status in setOf(401, 403)) {
+                clearBrowser()
                 clearCommitments()
                 clearGrowth()
                 clearWorks()
@@ -329,7 +423,8 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun refreshLocked(refreshDetails: Boolean = true) {
         val hello = api.handshake()
         if (!currentSession()) return
-        if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "commitmentDetails" !in hello.capabilities) clearCommitments()
+        if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "browserHandoff" !in hello.capabilities) clearBrowser()
+        if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "commitmentDetails" !in hello.capabilities || ("commitmentBrowse" in mutable.value.capabilities) != ("commitmentBrowse" in hello.capabilities)) clearCommitments()
         val currentRole = mutable.value.roles.find { it.id == mutable.value.selected }
         val nextRole = hello.roles.find { it.id == mutable.value.selected }
         if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "growth" !in hello.capabilities ||
@@ -375,6 +470,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             nextCursor = snapshot.cursor
             // Replace authoritative content, including withdrawals, in one publication.
             if (memoryEpoch != snapshot.memoryEpoch || generation != hello.generation) {
+                clearBrowser()
                 clearCommitments()
                 clearGrowth()
                 clearWorks()
@@ -399,6 +495,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             capabilities = hello.capabilities, selected = selected, messages = messages, works = works, historyCursor = olderCursor, syncIssue = null, offline = false, cachedAt = 0)
         if (selected == null || "messageContext" !in hello.capabilities) clearMessageContext()
         if (selected == null) clearWorks(close = true)
+        if (selected == null) clearBrowser(close = true)
         if (selected == null) clearCommitments(close = true)
         if (selected == null) clearGrowth(close = true)
         runCatching {
@@ -414,13 +511,14 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     }
     suspend fun refresh(silent: Boolean = false) = operation(silent = silent && mutable.value.connected) { refreshLocked() }
     suspend fun select(entryId: String?) = operation {
+        clearBrowser(close = true)
         clearCommitments(close = true)
         clearGrowth(close = true)
         clearWorks(close = true)
         clearMemories(close = true)
         clearMessageContext()
         require(entryId == null || mutable.value.roles.any { it.id == entryId })
-        mutable.value = mutable.value.copy(selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null, workBrowser = WorkBrowserState())
+        mutable.value = mutable.value.copy(commitments = CommitmentState(), selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null, workBrowser = WorkBrowserState())
         cursor = 0; memoryEpoch = -1; olderMessages = emptyList(); olderCursor = null
         mutable.value = mutable.value.copy(historyCursor = null, searchResults = emptyList(), searchCursor = null, searchQuery = "", searchDone = false)
         clearWorkLocked()
@@ -610,6 +708,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun <T> guardedRead(block: suspend () -> T): T = mutex.withLock {
         try { block() } catch (error: ApiFailure) {
             if (error.status in setOf(401, 403)) {
+                clearBrowser()
                 clearCommitments()
                 clearGrowth()
                 clearWorks()
@@ -643,10 +742,11 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     suspend fun removePending(id: String) = operation { persist(mutable.value.pending.filterNot { it.id == id }) }
     suspend fun createRole(id: String, name: String) = operation {
         val entryId = api.createRole(id, name)
+        clearBrowser(close = true)
         clearCommitments(close = true)
         clearGrowth(close = true)
         clearWorks(close = true)
-        mutable.value = mutable.value.copy(selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null, workBrowser = WorkBrowserState())
+        mutable.value = mutable.value.copy(commitments = CommitmentState(), selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null, workBrowser = WorkBrowserState())
         refreshLocked()
     }
     suspend fun persona(entryId: String): PersonaSettings = guardedRead { api.personas(entryId) }

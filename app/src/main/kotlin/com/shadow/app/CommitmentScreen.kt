@@ -15,9 +15,12 @@ import com.shadow.bot.*
 @Composable internal fun CommitmentScreen(state: ScreenState, vm: BotViewModel) {
     val data = state.bot.commitments
     val page = data.page?.takeIf { it.entryId == state.bot.selected }
-    var filter by remember(state.bot.selected) { mutableStateOf("ongoing") }
+    val browse = "commitmentBrowse" in state.bot.capabilities
+    var query by remember(state.bot.selected, data.query) { mutableStateOf(data.query) }
+    var filter by remember(state.bot.selected, data.status) { mutableStateOf(data.status.ifBlank { "all" }) }
     var expanded by remember(state.bot.selected) { mutableStateOf<String?>(null) }
     val list = rememberLazyListState()
+    LaunchedEffect(data.query, data.status, page?.revision) { list.scrollToItem(0) }
     val pending = state.bot.pending.filter { it.entryId == state.bot.selected && it.commitmentId != null }
     val enabled = !state.bot.busy && !state.bot.needsLogin && !state.connecting && !data.loading
     LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -26,20 +29,32 @@ import com.shadow.bot.*
         else {
             if (data.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             data.error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
+            if (browse) item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(query, { if (it.length <= 200) query = it }, modifier = Modifier.fillMaxWidth(),
+                        label = { Text("搜索目标、结果和等待条件") }, singleLine = true)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { vm.searchCommitments(query, data.status) }, enabled = enabled) { Text("搜索持续事项") }
+                        if (query.isNotEmpty() || data.query.isNotEmpty()) TextButton(onClick = { query = ""; vm.searchCommitments("", data.status) }, enabled = enabled) { Text("清除搜索") }
+                    }
+                }
+            }
             item {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("ongoing" to "跟进中", "ended" to "已结束", "all" to "全部").forEach { (value, label) ->
-                        FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(label) })
+                        FilterChip(selected = filter == value, onClick = { filter = value; if (browse) vm.searchCommitments(data.query, if (value == "all") "" else value) }, label = { Text(label) })
                     }
                 }
             }
             if (page != null) {
-                val rows = page.items.filter { filter == "all" || (it.state in setOf("completed", "cancelled")) == (filter == "ended") }
+                val rows = if (browse) page.items else page.items.filter { filter == "all" || (it.state in setOf("completed", "cancelled")) == (filter == "ended") }
+                if (browse) item { Text("共 ${page.total} 项，已加载 ${page.items.size} 项", style = MaterialTheme.typography.bodySmall) }
                 if (rows.isEmpty()) item { Text("当前范围没有持续事项。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(rows, key = { it.id }) { item ->
                     Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface) {
                         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text(when (item.state) { "active" -> "跟进中"; "waiting" -> "等待条件"; "paused" -> "已暂停"; "completed" -> "已完成"; "cancelled" -> "已停止"; else -> item.state }, style = MaterialTheme.typography.labelMedium)
+                            if (item.match.isNotBlank()) Text(item.match, color = MaterialTheme.colorScheme.primary)
                             Text(item.goal, style = MaterialTheme.typography.titleMedium)
                             if (item.waitReason.isNotBlank()) Text(item.waitReason)
                             item.nextCheckAt?.let { Text("下次检查：${time(it)}", style = MaterialTheme.typography.bodySmall) }
@@ -66,7 +81,11 @@ import com.shadow.bot.*
                         }
                     }
                 }
-                item { Text(if (page.hasMore) "仅显示最近 100 项有效持续事项，筛选仅作用于这些记录。更早的委托可在聊天中查找。" else "当前伙伴的有效持续事项；已遗忘或来源失效的记录不会显示。", style = MaterialTheme.typography.bodySmall) }
+                if (browse) {
+                    if (page.next != null && page.items.size < 600) item { TextButton(onClick = vm::moreCommitments, enabled = enabled) { Text("加载更多持续事项") } }
+                    if (page.next != null && page.items.size >= 600) item { Text("已显示 600 项，请缩小搜索范围。") }
+                } else item { Text(if (page.hasMore) "仅显示最近 100 项有效持续事项，筛选仅作用于这些记录。更早的委托可在聊天中查找。" else "当前伙伴的有效持续事项；已遗忘或来源失效的记录不会显示。", style = MaterialTheme.typography.bodySmall) }
+
             }
             item { TextButton(onClick = vm::reloadCommitments, enabled = enabled) { Text("重新读取持续事项") } }
         }

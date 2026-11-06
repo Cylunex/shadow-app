@@ -17,6 +17,11 @@ import java.util.concurrent.TimeUnit
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
+    suspend fun browserSessions(entryId: String): BrowserSessions = throw ApiFailure(503, "当前服务尚未开放手机浏览器接手。")
+    suspend fun browser(entryId: String, generation: String, sessionId: String, version: Long, action: String,
+        commandId: String? = null, ref: String? = null, text: String? = null): BrowserView = throw ApiFailure(503, "浏览器接手暂不可用。")
+    suspend fun commitmentPage(entryId: String, query: String = "", status: String = "", before: String? = null, ifRevision: String? = null, limit: Int = 50): CommitmentPage =
+        throw ApiFailure(503, "当前服务尚未开放持续事项检索。")
     suspend fun commitments(entryId: String, ifRevision: String? = null): CommitmentPage = throw ApiFailure(503, "当前服务尚未开放持续事项管理。")
     suspend fun growth(entryId: String, ifRevision: String? = null): GrowthPage = throw ApiFailure(503, "当前服务尚未开放成长手记。")
     suspend fun workPage(entryId: String, query: String = "", status: String = "", before: String? = null, ifRevision: String? = null, limit: Int = 50): WorkPage =
@@ -92,16 +97,37 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
     suspend fun nativeLoginConfig(): JSONObject = request("auth/native/config")
     suspend fun nativeIdentity(): JSONObject = request("auth/me")
     override suspend fun createRole(id: String, name: String): String = request("roles", JSONObject().put("id", id).put("name", name)).getString("entryId")
+    override suspend fun browserSessions(entryId: String): BrowserSessions {
+        val row = request("browser-sessions?entryId=${encode(entryId)}")
+        return BrowserSessions(row.getString("entryId"), row.getString("generation"), row.getLong("epoch"), row.getJSONArray("items").objects().map {
+            check(it.getString("state") == "handoff")
+            BrowserSession(it.getString("id"), it.getString("workId"), it.getString("entryId"), it.getLong("version"), it.string("goal"))
+        })
+    }
+    override suspend fun browser(entryId: String, generation: String, sessionId: String, version: Long, action: String,
+        commandId: String?, ref: String?, text: String?): BrowserView {
+        val row = request("browser/${encode(sessionId)}", JSONObject().put("entryId", entryId).put("generation", generation)
+            .put("expectedVersion", version).put("action", action).put("commandId", commandId).put("ref", ref).put("text", text))
+        return BrowserView(row.getString("sessionId"), row.getString("workId"), row.getString("entryId"), row.getString("generation"), row.getLong("epoch"),
+            if (row.has("version")) row.getLong("version") else null, row.getString("state"), row.string("title"), row.string("text"), row.string("screenshot"),
+            (row.optJSONArray("controls") ?: JSONArray()).objects().map { BrowserControl(it.getString("ref"), it.string("label"), it.getString("tag"), it.string("type"), it.optBoolean("fillable"), it.optBoolean("disabled")) })
+    }
     override suspend fun commitments(entryId: String, ifRevision: String?): CommitmentPage {
         val row = request("commitments?entryId=${encode(entryId)}" + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: ""))
+        return parseCommitments(row)
+    }
+    override suspend fun commitmentPage(entryId: String, query: String, status: String, before: String?, ifRevision: String?, limit: Int): CommitmentPage =
+        parseCommitments(request("commitment-page?entryId=${encode(entryId)}&query=${encode(query)}&status=${encode(status)}&limit=$limit" +
+            (before?.let { "&before=${encode(it)}" } ?: "") + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: "")))
+    private fun parseCommitments(row: JSONObject): CommitmentPage {
         return CommitmentPage(row.getString("entryId"), row.getString("generation"), row.getLong("epoch"), row.getString("revision"),
             row.getJSONArray("items").objects().map { item ->
                 val actions = item.getJSONArray("allowedActions")
                 Commitment(item.getString("id"), item.getString("entryId"), item.getString("goal"), item.getString("state"), item.getString("kind"),
                     item.getString("completion"), item.getLong("version"), item.string("result"), item.optBoolean("resultTruncated"),
                     item.string("waitKind"), item.string("waitReason"), if (item.has("nextCheckAt") && !item.isNull("nextCheckAt")) item.getLong("nextCheckAt") else null,
-                    item.string("workId").takeIf(String::isNotEmpty), (0 until actions.length()).map(actions::getString).toSet())
-            }, row.getBoolean("hasMore"), row.optBoolean("unchanged"))
+                    item.string("workId").takeIf(String::isNotEmpty), (0 until actions.length()).map(actions::getString).toSet(), item.string("match"))
+            }, row.getBoolean("hasMore"), row.optBoolean("unchanged"), row.string("query"), row.string("status"), row.string("next").takeIf(String::isNotEmpty), row.optInt("total", row.getJSONArray("items").length()))
     }
     override suspend fun growth(entryId: String, ifRevision: String?): GrowthPage {
         val row = request("growth?entryId=${encode(entryId)}" + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: ""))

@@ -14,6 +14,8 @@
 
 后续源码 0.14.0（24）增加[成长手记](bot-growth-notebook.md)：`GET growth?entryId=…&ifRevision=…`，`growthSnapshots` 开启有效投影的条件读取，旧 `growth` 服务按完整响应兼容。没有新增写入端点；本增量同样未部署或构建安装包。
 
+后续源码 0.16.0（26）新增 `browserHandoff` / `GET browser-sessions` / `POST browser/<id>` 与 `commitmentBrowse` / `GET commitment-page`。浏览器输入及截图不进入状态文件或待发队列，未知操作不自动重放；持续事项旧接口保持兼容。协议、敏感数据边界与 83 + 37 项验证见[浏览器接手与检索](bot-browser-handoff.md)。本批未部署或构建安装包。
+
 后续源码 0.15.0（25）增加[持续事项管理](bot-commitments.md)，通过 `commitmentDetails` 与 `GET commitments` 条件读取当前伙伴的有效委托，动作沿用 `POST commands` 和原编号／版本。旧服务保留聊天入口，未部署或构建安装包。
 
 ## 已接入的 Product v1

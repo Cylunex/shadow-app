@@ -1,4 +1,5 @@
 // Synthetic local integration fixture. Never loads deployment configuration or credentials.
+import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, writeFile, rm, mkdir, realpath } from 'node:fs/promises';
@@ -14,8 +15,22 @@ const root = await realpath(await mkdtemp(join(tmpdir(), 'shadow-app-contract-')
 await writeFile(join(root, 'config.json'), JSON.stringify({ version: 1, stateDirectory: root, batchMs: 100,
   qq: { mode: 'disabled' }, general: { enabled: true }, memory: { autoLearn: false } }));
 const config = loadConfig(join(root, 'config.json'), {});
-if (process.argv[4] === 'commitments') config.companionContinuity = { enabled: true };
+if (['commitments','commitment-page'].includes(process.argv[4])) config.companionContinuity = { enabled: true };
 if (process.argv[4] === 'growth') config.companionBehavior = { enabled: true };
+let browserServer;
+if (process.argv[4] === 'browser') {
+  let writes=0;
+  browserServer=createServer((req,res)=>{
+    if(req.method==='POST'){writes++;req.resume();}
+    res.setHeader('content-type','text/html; charset=utf-8');
+    res.end(`<!doctype html><title>合成接手页面</title><p>已提交 ${writes} 次</p><form method="post"><label>验证码<input name="code" type="password"></label><button>提交合成记录</button></form>`);
+  });
+  await new Promise(resolve=>browserServer.listen(0,'127.0.0.1',resolve));
+  const executablePath=[process.env.LOSNA_TEST_BROWSER,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome','/usr/bin/chromium','/usr/bin/chromium-browser'].find(p=>p&&existsSync(p));
+  if(!executablePath)throw new Error('A local test browser is required');
+  const {browserConfig}=await moduleAt('src/browser.js');
+  config.browser=browserConfig({enabled:true,executablePath,allowedOrigins:[`http://127.0.0.1:${browserServer.address().port}`]},root);
+}
 let lifeServer, life;
 if (process.argv[3]) {
   lifeServer = createServer(async (req, res) => {
@@ -48,13 +63,23 @@ const runtime = new Runtime({ store, memory: new Memory(store), config,
 store.put('sources', { id: 'fixture-evidence', person: 'owner', text: 'synthetic work request', state: 'processed' });
 store.put('work', { id: 'fixture-work', person: 'owner', entryId: 'losna', domain: 'general', workspace: 'scratch',
   goal: 'synthetic report', state: 'waiting', paused: true, sourceIds: ['fixture-evidence'], plan: [{ content: 'write report', status: 'pending' }] });
-if (process.argv[4] === 'commitments') {
+if (process.argv[4] === 'browser') {
+  const context={person:'owner',kind:'work',workId:'fixture-work'};
+  const opened=await runtime.browser.command(context,{action:'open',url:config.browser.allowedOrigins[0],commandId:'fixture-open-page'});
+  await runtime.browser.command(context,{action:'handoff',sessionId:opened.sessionId,commandId:'fixture-handoff-page'});
+  runtime.memory.save('owner',{text:'合成浏览器来源'},['fixture-evidence']);
+}
+if (['commitments','commitment-page'].includes(process.argv[4])) {
   const source = store.get('sources', 'fixture-evidence');
   store.put('sources', { ...source, ...runtime.origin([], { entryId: 'losna' }), receivedAt: Date.now() });
   runtime.continuity.manage(runtime.context('owner', ['fixture-evidence'], 'chat'), {
     action: 'create', goal: '合成长期阅读目标', workId: 'fixture-work', completion: 'user_judgment',
   });
   runtime.memory.save('owner', { text: '合成持续事项来源' }, ['fixture-evidence']);
+}
+if (process.argv[4] === 'commitment-page') {
+  const seed=store.all('commitments')[0];
+  for(let i=0;i<123;i++)store.put('commitments',{...seed,id:`browse-${i}`,goal:`合成持续目标 ${i}`,result:'完整结果 100% _ +'});
 }
 if (process.argv[4] === 'growth') {
   const now = Date.now(), persona = runtime.personas.resolve('losna');
@@ -88,14 +113,14 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (!url.pathname.startsWith('/losna/agent/')) { res.writeHead(404); res.end(); return; }
     await handleProduct(runtime.product, req, res, url.pathname.slice('/losna'.length), url.searchParams);
-    if (process.argv[4] !== 'commitments' && req.method === 'POST' && url.pathname.endsWith('/commands')) runtime.runWork('fixture-work').catch(() => {});
+    if (!['commitments','commitment-page','browser'].includes(process.argv[4]) && req.method === 'POST' && url.pathname.endsWith('/commands')) runtime.runWork('fixture-work').catch(() => {});
   } catch { res.writeHead(500); res.end(); }
 });
 server.listen(0, '127.0.0.1', () => process.stdout.write(`http://127.0.0.1:${server.address().port}/\n`));
 let closing = false;
 async function close() {
   if (closing) return; closing = true;
-  server.close(); lifeServer?.close(); await runtime.close(); store.close(); await rm(root, { recursive: true, force: true });
+  server.close(); lifeServer?.close(); browserServer?.close(); await runtime.close(); store.close(); await rm(root, { recursive: true, force: true });
   process.exit(0);
 }
 process.on('SIGTERM', close);

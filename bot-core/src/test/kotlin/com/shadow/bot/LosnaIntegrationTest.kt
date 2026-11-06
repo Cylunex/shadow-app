@@ -119,6 +119,56 @@ class LosnaIntegrationTest {
             if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
         }
     }
+    @Test fun commitmentSearchPagesAllEffectiveRecordsThroughHttpAndWithdrawsOldCursor() = runBlocking<Unit> {
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "commitment-page")
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val api = HttpProductApi.fixture(process.inputStream.bufferedReader().readLine().toHttpUrl())
+            val hello = api.handshake(); assertTrue("commitmentBrowse" in hello.capabilities)
+            val first = api.commitmentPage("losna", "100% _ +"); assertEquals(123, first.total); assertEquals(50, first.items.size)
+            val second = api.commitmentPage("losna", first.query, before = first.next)
+            val third = api.commitmentPage("losna", first.query, before = second.next)
+            assertEquals(123, (first.items + second.items + third.items).map { it.id }.toSet().size); assertNull(third.next)
+            assertTrue(first.items.all { it.match.contains("100% _ +") })
+            assertTrue(api.commitmentPage("losna", first.query, ifRevision = first.revision).unchanged)
+            assertEquals(100, api.commitments("losna").items.size)
+            val memory = api.memories().single()
+            api.send(PendingCommand("forget-page-source", "losna", "", 1, action = "memory.forget", memoryId = memory.id, expectedVersion = memory.version), hello.generation)
+            assertEquals(0, api.commitmentPage("losna").total)
+            try { api.commitmentPage("losna", first.query, before = first.next); fail("old cursor") }
+            catch (error: ApiFailure) { assertEquals(409, error.status) }
+        } finally { process.outputStream.close(); if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly() }
+    }
+
+    @Test fun browserHandsOffRealPageThroughHttpWithoutReplayingClicksOrResumingWork() = runBlocking<Unit> {
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "browser")
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val api = HttpProductApi.fixture(process.inputStream.bufferedReader().readLine().toHttpUrl())
+            val hello = api.handshake(); assertTrue("browserHandoff" in hello.capabilities)
+            val session = api.browserSessions("losna").items.single()
+            var view = api.browser("losna", hello.generation, session.id, session.version, "inspect")
+            assertTrue(view.screenshot.isNotBlank()); assertEquals("合成接手页面", view.title)
+            val input = view.controls.first { it.fillable }
+            val fill = api.browser("losna", hello.generation, session.id, view.version!!, "fill", "native-fill-once", input.ref, "synthetic-code")
+            view = api.browser("losna", hello.generation, session.id, fill.version!!, "inspect")
+            val version = view.version!!; val button = view.controls.first { it.label == "提交合成记录" }
+            val clicked = api.browser("losna", hello.generation, session.id, version, "click", "native-click-once", button.ref)
+            val repeated = api.browser("losna", hello.generation, session.id, version, "click", "native-click-once", button.ref)
+            assertEquals(clicked, repeated)
+            view = api.browser("losna", hello.generation, session.id, clicked.version!!, "inspect")
+            assertTrue(view.text.contains("已提交 1 次"))
+            try { api.browser("losna", "old-host", session.id, view.version!!, "resume", "wrong-host-command"); fail("old host") }
+            catch (error: ApiFailure) { assertEquals(409, error.status) }
+            api.browser("losna", hello.generation, session.id, view.version!!, "resume", "native-resume-once")
+            assertTrue(api.browserSessions("losna").items.isEmpty()); assertEquals("waiting", api.work("fixture-work", "losna").work.state)
+            val memory = api.memories().single()
+            api.send(PendingCommand("forget-browser-evidence", "losna", "", 1, action = "memory.forget", memoryId = memory.id, expectedVersion = memory.version), hello.generation)
+            try { api.browser("losna", hello.generation, session.id, view.version!!, "inspect"); fail("forgotten source") }
+            catch (error: ApiFailure) { assertTrue(error.status in listOf(404, 409)) }
+        } finally { process.outputStream.close(); if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly() }
+    }
+
     @Test fun commitmentsManageOriginalWorkAndWithdrawAfterForgetThroughHttp() = runBlocking<Unit> {
         val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "commitments")
             .redirectError(ProcessBuilder.Redirect.INHERIT).start()

@@ -388,4 +388,60 @@ class BotScreenTest {
         compose.onNodeWithText("当前启动口令").assertIsDisplayed()
     }
 
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun commitmentSearchShowsFullCountAndMoreWithoutClaimingLegacyWindow() {
+        val item = Commitment("c", "assistant", "合成持续阅读目标", "active", "commitment", "ongoing", 1, "", false, "", "", null, null, setOf("commitment.pause"), "命中较早的阅读结果")
+        val page = CommitmentPage("assistant", "host", 0, "revision", listOf(item), true, query = "阅读", status = "ongoing", next = "next", total = 123)
+        val state = ScreenState(bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + setOf("commitments", "commitmentDetails", "commitmentBrowse"),
+            commitments = CommitmentState(active = true, page = page, query = "阅读")), destination = Destination.Commitments)
+        compose.setContent { BotTheme { BotScreen(state, model()) } }
+        compose.onNodeWithText("搜索目标、结果和等待条件").assertIsDisplayed()
+        compose.onNodeWithText("共 123 项，已加载 1 项").performScrollTo().assertIsDisplayed()
+        screenshot("commitments-search-320")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("加载更多持续事项"))
+        compose.onNodeWithText("加载更多持续事项").assertIsDisplayed()
+    }
+
+    private fun handoffState(view: Boolean = true): ScreenState {
+        val session = BrowserSession("page", "work", "assistant", 2, "请核对合成资料并填写验证码")
+        val page = BrowserView("page", "work", "assistant", "host", 0, 2, "handoff", "合成资料页面", "仅用于布局验证", controls = listOf(
+            BrowserControl("e0", "验证码", "input", "password", true, false), BrowserControl("e1", "提交合成记录", "button", "", false, false)))
+        return ScreenState(bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "browserHandoff",
+            browser = BrowserHandoffState(active = true, sessions = listOf(session), view = if (view) page else null, loaded = true)), destination = Destination.Browser)
+    }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun browserHandoffNarrowControlsAndReturnRemainReachable() {
+        val state = mutableStateOf(handoffState()); val vm = model()
+        compose.setContent { BotTheme { BotScreen(state.value, vm) } }
+        compose.onNodeWithText("选择页面控件").performScrollTo().performClick()
+        compose.onNodeWithText("验证码").performClick()
+        compose.onNodeWithText("填写内容（不保存）").performScrollTo().performTextInput("synthetic-code")
+        compose.onNodeWithText("填写选中控件").performScrollTo().assertIsDisplayed()
+        screenshot("browser-controls-320")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("交回伙伴"))
+        compose.onNodeWithText("交回伙伴").assertIsDisplayed()
+        compose.runOnIdle { state.value = handoffState(false) }
+        compose.onNodeWithText("填写内容（不保存）").assertDoesNotExist()
+        compose.onNodeWithText("查看并接手").assertIsDisplayed()
+        screenshot("browser-list-320")
+    }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun browserHandoffDoubleFontKeepsActionsAccessible() {
+        val vm = model()
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(1f, 2f)) {
+                BotTheme { BotScreen(handoffState(), vm) }
+            }
+        }
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("交回伙伴"))
+        compose.onNodeWithText("交回伙伴").assertIsDisplayed()
+        screenshot("browser-large-font-320")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("打开原事项"))
+        compose.onNodeWithText("打开原事项").assertIsDisplayed()
+    }
+    @Test fun browserUnknownOutcomeHasNoRetryButtonOrStaleControls() {
+        val state = handoffState().let { it.copy(bot = it.bot.copy(browser = BrowserHandoffState(active = true, notice = "操作结果未知。请重新查看页面核对，不要重复点击。"))) }
+        compose.setContent { BotTheme { BotScreen(state, model()) } }
+        compose.onNodeWithText("重新读取接手列表").assertIsDisplayed()
+        compose.onNodeWithText("点击选中控件").assertDoesNotExist()
+        compose.onNodeWithText("交回伙伴").assertDoesNotExist()
+    }
+
 }

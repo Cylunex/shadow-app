@@ -84,9 +84,115 @@ class BotRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) { PendingCommand("command-one", "losna", "", 1,
             action = "commitment.pause", commitmentId = "c", workId = "w", expectedVersion = 9) }
     }
+    @Test fun commitmentBrowseCombinesPagesAndConditionalReadsWithoutLosingSearch() = runBlocking {
+        val api = Api(); api.commitmentBrowse = true
+        val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginCommitments("阅读", "ongoing")
+        val page = commitmentPage().copy(query = "阅读", status = "ongoing", next = "page-two", total = 2, hasMore = true)
+        api.commitmentPages.add(page); repo.loadCommitments()
+        api.commitmentPages.add(page.copy(items = listOf(commitment().copy(id = "second")), next = null, hasMore = false)); repo.loadCommitments(more = true)
+        assertEquals(2, repo.state.value.commitments.page!!.items.size)
+        api.commitmentPages.add(page.copy(items = emptyList(), unchanged = true)); repo.loadCommitments(silent = true)
+        assertEquals(2, repo.state.value.commitments.page!!.items.size)
+        assertEquals(listOf(null to null, "page-two" to null, null to page.revision), api.commitmentPageRequests)
+        assertEquals("阅读", repo.state.value.commitments.query)
+        repo.select("doll"); assertEquals("", repo.state.value.commitments.query)
+    }
+    @Test fun commitmentBrowseRejectsMixedRevisionsAndClearsFailedOrLatePages() = runBlocking {
+        val api = Api(); api.commitmentBrowse = true
+        val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginCommitments("", "")
+        val page = commitmentPage().copy(next = "next", total = 2)
+        api.commitmentPages.add(page); repo.loadCommitments()
+        api.commitmentPages.add(page.copy(revision = "new")); repo.loadCommitments(more = true)
+        assertNull(repo.state.value.commitments.page)
+        api.commitmentPages.add(page); api.beforeCommitments = { repo.beginCommitments("new query", "ended") }; repo.loadCommitments()
+        assertNull(repo.state.value.commitments.page); assertEquals("new query", repo.state.value.commitments.query)
+        api.beforeCommitments = {}; repo.beginCommitments("", ""); api.commitmentPages.add(page); repo.loadCommitments()
+        api.commitmentError = IOException("offline"); repo.loadCommitments(more = true); assertNull(repo.state.value.commitments.page)
+    }
+    private fun browserSession() = BrowserSession("page-one", "work-one", "losna", 1, "合成浏览任务")
+    private fun browserView() = BrowserView("page-one", "work-one", "losna", "one", 0, 2, "handoff", "合成页面", "页面内容", "synthetic-image",
+        listOf(BrowserControl("e0", "验证码", "input", "password", true, false)))
+    private suspend fun prepareBrowser(api: Api, store: Store = Store()): BotRepository {
+        val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginBrowser(); repo.loadBrowser(); repo.inspectBrowser(browserSession()); return repo
+    }
+    @Test fun browserRetainsSameViewButWithdrawsChangedVersionAndSource() = runBlocking {
+        val api = Api(); val repo = prepareBrowser(api)
+        assertEquals(browserView(), repo.state.value.browser.view)
+        api.browserRows = listOf(browserSession().copy(version = 2)); repo.loadBrowser(silent = true)
+        assertEquals(browserView(), repo.state.value.browser.view)
+        api.browserRows = listOf(browserSession().copy(version = 3)); repo.loadBrowser(silent = true)
+        assertNull(repo.state.value.browser.view)
+        api.browserRows = emptyList(); repo.loadBrowser(); assertTrue(repo.state.value.browser.sessions.isEmpty())
+    }
+    @Test fun browserMutationNeverEntersDiskOrRetryQueueAndCannotDoubleDispatch() = runBlocking {
+        val api = Api(); val store = Store(); val repo = prepareBrowser(api, store)
+        api.browserResult = browserView().copy(state = "unknown", version = null)
+        repo.actBrowser(browserView(), "fill", "e0", "synthetic-sensitive-code")
+        assertNull(repo.state.value.browser.view); assertTrue(repo.state.value.browser.notice!!.contains("未知"))
+        repo.actBrowser(browserView(), "fill", "e0", "synthetic-sensitive-code")
+        assertEquals(1, api.browserCommands.size); assertEquals("fill", api.browserCommands.single().first)
+        assertTrue(repo.state.value.pending.isEmpty())
+        val disk = StateCodec.encode(store.saved) + store.cache.toString()
+        assertFalse(disk.contains("synthetic-sensitive-code")); assertFalse(disk.contains("synthetic-image"))
+    }
+    @Test fun browserLostReceiptRequiresInspectionAndResumeDoesNotSendWorkCommand() = runBlocking {
+        val api = Api(); val repo = prepareBrowser(api)
+        api.browserError = IOException("response lost"); repo.actBrowser(browserView(), "click", "e0")
+        assertTrue(repo.state.value.browser.error!!.contains("未能确认")); assertNull(repo.state.value.browser.view)
+        repo.actBrowser(browserView(), "click", "e0"); assertEquals(1, api.browserCommands.size)
+        api.browserError = null; api.browserRows = listOf(browserSession()); repo.loadBrowser(); repo.inspectBrowser(browserSession())
+        api.browserResult = browserView().copy(state = "active", version = 3); repo.actBrowser(browserView(), "resume")
+        assertTrue(repo.state.value.browser.notice!!.contains("原事项")); assertTrue(api.commands.isEmpty())
+    }
+    @Test fun browserRejectsLateReadsFailuresAndCrossEntryPayloads() = runBlocking {
+        val api = Api(); val repo = prepareBrowser(api)
+        api.beforeBrowser = { repo.clearBrowser(close = true) }; repo.inspectBrowser(repo.state.value.browser.sessions.single())
+        assertFalse(repo.state.value.browser.active); assertNull(repo.state.value.browser.view)
+        api.beforeBrowser = {}; repo.beginBrowser(); api.browserRows = listOf(browserSession().copy(entryId = "doll")); repo.loadBrowser()
+        assertTrue(repo.state.value.browser.sessions.isEmpty())
+        api.browserRows = listOf(browserSession()); repo.loadBrowser(); repo.inspectBrowser(browserSession())
+        api.browserReadError = IOException("offline"); repo.loadBrowser(silent = true); assertNull(repo.state.value.browser.view)
+        api.browserReadError = ApiFailure(401, "expired"); repo.loadBrowser(); assertTrue(repo.state.value.needsLogin)
+    }
+    @Test fun browserAuthorityConnectionAndLifecycleChangesRemoveWebsiteContent() = runBlocking {
+        for (change in listOf("epoch", "host", "capability", "entry", "background", "connection")) {
+            val api = Api(); val store = Store(); val repo = prepareBrowser(api, store)
+            when (change) {
+                "epoch" -> { api.epoch++; repo.refresh() }
+                "host" -> { api.generation = "two"; repo.refresh() }
+                "capability" -> { api.browserEnabled = false; repo.refresh() }
+                "entry" -> repo.select("doll")
+                "background" -> repo.clearBrowser(close = true)
+                "connection" -> { repo.clearBrowser(close = true); store.saved = store.saved.copy(session = store.saved.session!!.copy(id = "new")); repo.inspectBrowser(browserSession()) }
+            }
+            assertNull(change, repo.state.value.browser.view)
+        }
+    }
     private class Api : ProductApi {
+        var browserEnabled = true
+        var browserRows = listOf(BrowserSession("page-one", "work-one", "losna", 1, "合成浏览任务"))
+        var browserResult: BrowserView? = null
+        var browserError: Exception? = null
+        var browserReadError: Exception? = null
+        var beforeBrowser: suspend () -> Unit = {}
+        val browserCommands = mutableListOf<Pair<String, String?>>()
+        override suspend fun browserSessions(entryId: String): BrowserSessions {
+            browserReadError?.let { throw it }; return BrowserSessions(entryId, generation, epoch, browserRows)
+        }
+        override suspend fun browser(entryId: String, generation: String, sessionId: String, version: Long, action: String,
+            commandId: String?, ref: String?, text: String?): BrowserView {
+            if (action != "inspect") browserCommands.add(action to commandId)
+            beforeBrowser(); browserError?.let { throw it }
+            return browserResult ?: BrowserView("page-one", "work-one", "losna", "one", 0, 2, "handoff", "合成页面", "页面内容", "synthetic-image",
+                listOf(BrowserControl("e0", "验证码", "input", "password", true, false)))
+        }
         var generation = "one"
         var memoryBrowse = true
+        var commitmentBrowse = false
+        val commitmentPageRequests = mutableListOf<Pair<String?, String?>>()
+        override suspend fun commitmentPage(entryId: String, query: String, status: String, before: String?, ifRevision: String?, limit: Int): CommitmentPage {
+            commitmentPageRequests.add(before to ifRevision); beforeCommitments(); commitmentError?.let { throw it }; return commitmentPages.removeFirst()
+        }
         var commitmentsEnabled = true
         val commitmentPages = java.util.ArrayDeque<CommitmentPage>()
         val commitmentRequests = mutableListOf<String?>()
@@ -166,7 +272,7 @@ class BotRepositoryTest {
         override suspend fun handshake(): Handshake {
             handshakeError?.let { throw it }
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna", personaId = personaId), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + (if (commitmentsEnabled) setOf("commitments", "commitmentDetails") else emptySet()) + (if (memoryBrowse) setOf("memoryBrowse") else emptySet()) + (if (workBrowse) setOf("workBrowse") else emptySet()) + (if (growthEnabled) setOf("growth") else emptySet()) + (if (growthSnapshots) setOf("growthSnapshots") else emptySet()), epoch)
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna", personaId = personaId), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + (if (browserEnabled) setOf("browserHandoff") else emptySet()) + (if (commitmentBrowse) setOf("commitmentBrowse") else emptySet()) + (if (commitmentsEnabled) setOf("commitments", "commitmentDetails") else emptySet()) + (if (memoryBrowse) setOf("memoryBrowse") else emptySet()) + (if (workBrowse) setOf("workBrowse") else emptySet()) + (if (growthEnabled) setOf("growth") else emptySet()) + (if (growthSnapshots) setOf("growthSnapshots") else emptySet()), epoch)
         }
         var beforeSnapshot: () -> Unit = {}
         override suspend fun snapshot(entryId: String): Snapshot {
