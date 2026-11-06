@@ -21,6 +21,16 @@ class BotRepositoryTest {
     private class Api : ProductApi {
         var generation = "one"
         var memoryBrowse = true
+        var growthEnabled = true
+        var growthSnapshots = true
+        var personaId = ""
+        val growthPages = java.util.ArrayDeque<GrowthPage>()
+        val growthRequests = mutableListOf<String?>()
+        var growthError: Exception? = null
+        var beforeGrowth: suspend () -> Unit = {}
+        override suspend fun growth(entryId: String, ifRevision: String?): GrowthPage {
+            growthRequests.add(ifRevision); beforeGrowth(); growthError?.let { throw it }; return growthPages.removeFirst()
+        }
         var workBrowse = true
         val workPages = java.util.ArrayDeque<WorkPage>()
         var workError: Exception? = null
@@ -82,7 +92,7 @@ class BotRepositoryTest {
         override suspend fun handshake(): Handshake {
             handshakeError?.let { throw it }
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + (if (memoryBrowse) setOf("memoryBrowse") else emptySet()) + (if (workBrowse) setOf("workBrowse") else emptySet()), epoch)
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna", personaId = personaId), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + (if (memoryBrowse) setOf("memoryBrowse") else emptySet()) + (if (workBrowse) setOf("workBrowse") else emptySet()) + (if (growthEnabled) setOf("growth") else emptySet()) + (if (growthSnapshots) setOf("growthSnapshots") else emptySet()), epoch)
         }
         var beforeSnapshot: () -> Unit = {}
         override suspend fun snapshot(entryId: String): Snapshot {
@@ -515,6 +525,56 @@ class BotRepositoryTest {
         repo.loadWorks(more = true); assertEquals(12, api.workRequests.size)
         api.workBrowse = false; repo.refresh(); repo.loadWorks(); assertEquals(12, api.workRequests.size)
         assertTrue(repo.state.value.workBrowser.items.isEmpty())
+    }
+
+    private fun growthPage(revision: String = "r1") = GrowthPage("losna", "losna", "Losna",
+        listOf(GrowthHabit("简短回复", "以后回复简短一点", "persistent")),
+        listOf(GrowthView("阅读", "合成看法", "developing", "合成摘录", "合成资料")), "one", 0, revision)
+
+    @Test fun growthUnchangedRefreshKeepsContentAndChangedProjectionReplacesIt() = runBlocking<Unit> {
+        val api = Api().apply { personaId = "losna" }; val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginGrowth()
+        val first = growthPage(); api.growthPages.add(first); repo.loadGrowth()
+        api.growthPages.add(first.copy(habits = emptyList(), views = emptyList(), unchanged = true)); repo.loadGrowth(silent = true)
+        assertEquals(first, repo.state.value.growth.page); assertEquals(listOf(null, "r1"), api.growthRequests)
+        api.growthPages.add(growthPage("r2").copy(habits = emptyList())); repo.loadGrowth(silent = true)
+        assertTrue(repo.state.value.growth.page!!.habits.isEmpty()); assertFalse(repo.state.value.growth.loading)
+    }
+    @Test fun growthPersonaEpochRestartAndCapabilityChangesWithdrawOldContent() = runBlocking<Unit> {
+        val api = Api().apply { personaId = "losna" }; val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginGrowth()
+        api.growthPages.add(growthPage()); repo.loadGrowth()
+        api.personaId = "warm"; repo.refresh(); assertNull(repo.state.value.growth.page)
+        api.growthPages.add(growthPage()); repo.loadGrowth(); assertNull(repo.state.value.growth.page)
+        api.growthPages.add(growthPage().copy(personaId = "warm")); repo.loadGrowth()
+        api.epoch++; repo.refresh(); assertNull(repo.state.value.growth.page)
+        api.growthPages.add(growthPage().copy(personaId = "warm", epoch = 1)); repo.loadGrowth()
+        api.generation = "two"; repo.refresh(); assertNull(repo.state.value.growth.page)
+        api.growthEnabled = false; repo.refresh(); val requests = api.growthRequests.size; repo.loadGrowth()
+        assertEquals(requests, api.growthRequests.size)
+    }
+    @Test fun lateGrowthCannotReviveDismissedScreenOrChangedSession() = runBlocking<Unit> {
+        val api = Api().apply { personaId = "losna" }; val store = Store(); val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginGrowth()
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        api.beforeGrowth = { started.complete(Unit); release.await() }; api.growthPages.add(growthPage())
+        val pending = async { repo.loadGrowth() }; started.await(); repo.clearGrowth(close = true); release.complete(Unit); pending.await()
+        assertNull(repo.state.value.growth.page); assertFalse(repo.state.value.growth.active); assertFalse(repo.state.value.growth.loading)
+        repo.beginGrowth(); api.beforeGrowth = { store.saved = store.saved.copy(session = Session("https://other.example.com/", emptyList())) }
+        api.growthPages.add(growthPage()); repo.loadGrowth(); assertNull(repo.state.value.growth.page)
+    }
+    @Test fun growthFailureWithdrawsContentAndRequiresLoginAfter401() = runBlocking<Unit> {
+        val api = Api().apply { personaId = "losna" }; val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginGrowth()
+        api.growthPages.add(growthPage()); repo.loadGrowth()
+        api.growthError = IOException("offline"); repo.loadGrowth(silent = true)
+        assertNull(repo.state.value.growth.page); assertNotNull(repo.state.value.growth.error)
+        api.growthError = ApiFailure(401, "expired"); repo.loadGrowth()
+        assertNull(repo.state.value.growth.page); assertTrue(repo.state.value.needsLogin)
+    }
+    @Test fun legacyGrowthReadsFullProjectionWithoutConditionalProtocolAndEntrySwitchClearsIt() = runBlocking<Unit> {
+        val api = Api().apply { personaId = "losna" }; api.growthSnapshots = false
+        val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginGrowth()
+        val legacy = growthPage().copy(generation = null, epoch = null, revision = null)
+        api.growthPages.add(legacy); repo.loadGrowth(); api.growthPages.add(legacy); repo.loadGrowth(silent = true)
+        assertEquals(legacy, repo.state.value.growth.page); assertEquals(listOf(null, null), api.growthRequests)
+        repo.select("doll"); assertNull(repo.state.value.growth.page); assertFalse(repo.state.value.growth.active)
     }
 
 }

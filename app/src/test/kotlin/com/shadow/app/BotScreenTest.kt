@@ -137,6 +137,53 @@ class BotScreenTest {
         screenshot("works-large-type-320")
     }
 
+    private fun growthPage() = GrowthPage("assistant", "assistant", "小影",
+        listOf(GrowthHabit("回复简短，通常一两句", "今天回复简短一点。", "day")),
+        listOf(GrowthView("现场录音的留白", "我更喜欢保留一小段现场的安静。", "developing", "材料里保留了钟声之间的短暂安静。", "合成电台录音")), revision = "r1")
+
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun growthShowsCurrentHabitsAndExpandsReadingEvidenceOnNarrowScreen() {
+        val vm = model(); val page = growthPage()
+        compose.setContent { BotTheme { BotScreen(ScreenState(destination = Destination.Growth,
+            bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "growth", growth = GrowthState(active = true, page = page))), vm) } }
+        compose.onNodeWithText("成长手记").assertIsDisplayed()
+        compose.onNodeWithText("今天适用").assertIsDisplayed()
+        compose.onNodeWithText("今天回复简短一点。").assertIsDisplayed()
+        screenshot("growth-habits-320")
+        compose.onNodeWithText("查看阅读依据").performScrollTo().performClick()
+        compose.onNodeWithText("合成电台录音").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("材料里保留了钟声之间的短暂安静。").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("带回聊天讨论").performScrollTo().assertIsDisplayed()
+        screenshot("growth-evidence-320")
+    }
+    @Test fun growthUnchangedReadPreservesExpandedEvidenceAndFailureWithdrawsQuotes() {
+        val vm = model(); val page = growthPage()
+        val state = mutableStateOf(ScreenState(destination = Destination.Growth,
+            bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "growth", growth = GrowthState(active = true, page = page))))
+        compose.setContent { BotTheme { BotScreen(state.value, vm) } }
+        compose.onNodeWithText("查看阅读依据").performScrollTo().performClick()
+        compose.onNodeWithText("合成电台录音").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(bot = state.value.bot.copy(growth = state.value.bot.growth.copy(page = page.copy()))) }
+        compose.onNodeWithText("收起阅读依据").assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(bot = state.value.bot.copy(growth = GrowthState(active = true, error = "暂时无法读取成长手记，请重试。"))) }
+        compose.onNodeWithText("今天回复简短一点。").assertDoesNotExist()
+        compose.onNodeWithText("合成电台录音").assertDoesNotExist()
+        compose.onNodeWithText("暂时无法读取成长手记，请重试。").assertIsDisplayed()
+        compose.onNodeWithText("重新读取手记").assertIsDisplayed()
+    }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun growthEmptyStateSupportsLargeTypeWithoutClaimingNoMemory() {
+        val vm = model(); val page = growthPage().copy(habits = emptyList(), views = emptyList())
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(1f, 2f)) {
+                BotTheme { BotScreen(ScreenState(destination = Destination.Growth,
+                    bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "growth", growth = GrowthState(active = true, page = page))), vm) }
+            }
+        }
+        compose.onNodeWithText("暂时没有可沿用的相处习惯，不代表没有共同记忆。").performScrollTo().assertIsDisplayed()
+        screenshot("growth-empty-large-type-320")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("重新读取手记"))
+        compose.onNodeWithText("重新读取手记").assertIsDisplayed()
+    }
+
     @Test fun workFiltersAndResultsRemainReadable() {
         val vm = model()
         val running = Work("w1", "assistant", "整理一份周末阅读计划", "running", "已选出两篇适合周末阅读的文章。", "正在补充阅读顺序", version = 1)

@@ -12,6 +12,8 @@
 
 2026-11-06 后续源码 0.13.0（23）增加[事项检索](bot-work-browser.md)，未部署或构建安装包。
 
+后续源码 0.14.0（24）增加[成长手记](bot-growth-notebook.md)：`GET growth?entryId=…&ifRevision=…`，`growthSnapshots` 开启有效投影的条件读取，旧 `growth` 服务按完整响应兼容。没有新增写入端点；本增量同样未部署或构建安装包。
+
 ## 已接入的 Product v1
 
 设 DSH 根地址为 `https://example.com/dsh/`。统一 OIDC 登录和兼容口令连接并存，详情见[统一登录](bot-unified-login.md)。兼容登录请求为根地址加 `token` 参数，接收既有 DSH 签名 Cookie；不跟随跳转，不调用新账户接口。接口前缀为该根地址下 `losna/agent/api/`。

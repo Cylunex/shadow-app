@@ -11,8 +11,8 @@ android {
         manifestPlaceholders["appAuthRedirectScheme"] = "com.shadow.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 23
-        versionName = "0.13.0"
+        versionCode = 24
+        versionName = "0.14.0"
     }
     buildFeatures { compose = true }
     testOptions { unitTests.isIncludeAndroidResources = true }

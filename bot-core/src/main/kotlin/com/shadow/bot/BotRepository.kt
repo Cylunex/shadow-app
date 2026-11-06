@@ -18,6 +18,7 @@ data class BotState(
     val messageContext: MessageContextPage? = null, val contextBusy: Boolean = false, val contextError: String? = null,
     val memoryBrowser: MemoryBrowserState = MemoryBrowserState(),
     val workBrowser: WorkBrowserState = WorkBrowserState(),
+    val growth: GrowthState = GrowthState(),
 )
 
 /** Serializes user writes with snapshot/event refresh; cursors are never shared between contacts. */
@@ -40,6 +41,48 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private var memoryRequest = 0L
     private var memoryDetailRequest = 0L
     private var workRequest = 0L
+    private var growthRequest = 0L
+
+    fun clearGrowth(close: Boolean = false) {
+        growthRequest++
+        mutable.value = mutable.value.copy(growth = GrowthState(active = !close && mutable.value.growth.active))
+    }
+    fun beginGrowth() {
+        clearGrowth()
+        mutable.value = mutable.value.copy(growth = GrowthState(active = true))
+    }
+    suspend fun loadGrowth(silent: Boolean = false) {
+        val request = growthRequest
+        val entry = mutable.value.selected ?: return
+        operation(silent = true) {
+            val old = mutable.value.growth
+            if (!old.active || request != growthRequest || entry != mutable.value.selected || mutable.value.needsLogin || "growth" !in mutable.value.capabilities) return@operation
+            val snapshots = "growthSnapshots" in mutable.value.capabilities
+            mutable.value = mutable.value.copy(growth = old.copy(loading = !silent, error = null))
+            try {
+                val page = api.growth(entry, if (silent && snapshots) old.page?.revision else null)
+                if (!currentSession() || request != growthRequest || entry != mutable.value.selected) return@operation
+                check(page.entryId == entry)
+                val persona = mutable.value.roles.find { it.id == entry }?.personaId
+                if (page.personaId != persona || page.generation != null && page.generation != generation || page.epoch != null && page.epoch != memoryEpoch ||
+                    snapshots && (page.generation == null || page.epoch == null || page.revision.isNullOrBlank()))
+                    throw ApiFailure(409, "人格或手记内容已变化，正在重新读取。")
+                if (page.unchanged) check(snapshots && silent && old.page != null && page.revision == old.page.revision)
+                else mutable.value = mutable.value.copy(growth = old.copy(page = page, error = null))
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (!currentSession() || request != growthRequest || entry != mutable.value.selected) return@operation
+                // Daily habits can expire without a Product event. Do not show an
+                // unverified old habit as current when its refresh cannot complete.
+                mutable.value = mutable.value.copy(growth = mutable.value.growth.copy(page = null,
+                    error = if (error is ApiFailure) error.message else "暂时无法读取成长手记，请重试。"))
+                if (error is ApiFailure && error.status in setOf(401, 403)) throw error
+                if (error is ApiFailure && error.status == 409) refreshLocked()
+            } finally {
+                if (request == growthRequest) mutable.value = mutable.value.copy(growth = mutable.value.growth.copy(loading = false))
+            }
+        }
+    }
 
     fun clearWorks(close: Boolean = false) {
         workRequest++
@@ -224,6 +267,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             mutable.value = mutable.value.copy(liveReply = null)
             val expired = error is ApiFailure && error.status == 401
             if (error is ApiFailure && error.status in setOf(401, 403)) {
+                clearGrowth()
                 clearWorks()
                 clearMemories()
                 clearMessageContext()
@@ -244,6 +288,11 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun refreshLocked(refreshDetails: Boolean = true) {
         val hello = api.handshake()
         if (!currentSession()) return
+        val currentRole = mutable.value.roles.find { it.id == mutable.value.selected }
+        val nextRole = hello.roles.find { it.id == mutable.value.selected }
+        if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "growth" !in hello.capabilities ||
+            currentRole?.personaId != nextRole?.personaId || currentRole?.name != nextRole?.name ||
+            ("growthSnapshots" in mutable.value.capabilities) != ("growthSnapshots" in hello.capabilities)) clearGrowth()
         if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "workBrowse" !in hello.capabilities) clearWorks()
         if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "memories" !in hello.capabilities ||
             ("memoryBrowse" in mutable.value.capabilities) != ("memoryBrowse" in hello.capabilities)) clearMemories()
@@ -284,6 +333,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             nextCursor = snapshot.cursor
             // Replace authoritative content, including withdrawals, in one publication.
             if (memoryEpoch != snapshot.memoryEpoch || generation != hello.generation) {
+                clearGrowth()
                 clearWorks()
                 clearMemories()
                 clearMessageContext()
@@ -306,6 +356,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             capabilities = hello.capabilities, selected = selected, messages = messages, works = works, historyCursor = olderCursor, syncIssue = null, offline = false, cachedAt = 0)
         if (selected == null || "messageContext" !in hello.capabilities) clearMessageContext()
         if (selected == null) clearWorks(close = true)
+        if (selected == null) clearGrowth(close = true)
         runCatching {
             val server = boundSession?.baseUrl
             if (server != null) {
@@ -319,6 +370,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     }
     suspend fun refresh(silent: Boolean = false) = operation(silent = silent && mutable.value.connected) { refreshLocked() }
     suspend fun select(entryId: String?) = operation {
+        clearGrowth(close = true)
         clearWorks(close = true)
         clearMemories(close = true)
         clearMessageContext()
@@ -494,6 +546,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun <T> guardedRead(block: suspend () -> T): T = mutex.withLock {
         try { block() } catch (error: ApiFailure) {
             if (error.status in setOf(401, 403)) {
+                clearGrowth()
                 clearWorks()
                 clearMemories()
                 clearMessageContext()
@@ -525,6 +578,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     suspend fun removePending(id: String) = operation { persist(mutable.value.pending.filterNot { it.id == id }) }
     suspend fun createRole(id: String, name: String) = operation {
         val entryId = api.createRole(id, name)
+        clearGrowth(close = true)
         clearWorks(close = true)
         mutable.value = mutable.value.copy(selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null, workBrowser = WorkBrowserState())
         refreshLocked()

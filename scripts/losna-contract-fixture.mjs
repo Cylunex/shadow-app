@@ -14,6 +14,7 @@ const root = await realpath(await mkdtemp(join(tmpdir(), 'shadow-app-contract-')
 await writeFile(join(root, 'config.json'), JSON.stringify({ version: 1, stateDirectory: root, batchMs: 100,
   qq: { mode: 'disabled' }, general: { enabled: true }, memory: { autoLearn: false } }));
 const config = loadConfig(join(root, 'config.json'), {});
+if (process.argv[4] === 'growth') config.companionBehavior = { enabled: true };
 let lifeServer, life;
 if (process.argv[3]) {
   lifeServer = createServer(async (req, res) => {
@@ -46,6 +47,21 @@ const runtime = new Runtime({ store, memory: new Memory(store), config,
 store.put('sources', { id: 'fixture-evidence', person: 'owner', text: 'synthetic work request', state: 'processed' });
 store.put('work', { id: 'fixture-work', person: 'owner', entryId: 'losna', domain: 'general', workspace: 'scratch',
   goal: 'synthetic report', state: 'waiting', paused: true, sourceIds: ['fixture-evidence'], plan: [{ content: 'write report', status: 'pending' }] });
+if (process.argv[4] === 'growth') {
+  const now = Date.now(), persona = runtime.personas.resolve('losna');
+  const source = store.put('sources', { id: 'growth-habit-source', person: 'owner', ...runtime.origin([], { entryId: 'losna' }),
+    text: '以后回复简短一点。', receivedAt: now, occurredAt: new Date(now).toISOString(), state: 'processed' });
+  runtime.behavior.observe(source);
+  store.put('sources', { ...source, id: 'growth-reading-source', text: '合成阅读依据' });
+  const reading = { id: 'synthetic-reading', kind: 'reading', person: 'owner', entryId: 'losna', personaId: persona.id,
+    basePersonaId: persona.baseId, sourceIds: ['growth-reading-source'], epoch: store.epoch('owner'),
+    title: '合成现场录音', url: 'https://example.com/reading', text: '合成材料记下了一段现场留白。', summary: '合成阅读摘要',
+    contentHash: 'synthetic-content', state: 'completed', createdAt: now };
+  store.put('readings', reading);
+  const { saveReadingView } = await moduleAt('src/reading-views.js');
+  saveReadingView(store, runtime.memory, reading, { topic: '现场留白', opinion: '我更喜欢保留一小段留白', evidenceQuote: reading.text }, now);
+  runtime.memory.save('owner', { text: '合成阅读来源' }, ['growth-reading-source']);
+}
 if (process.argv[4] === 'works') {
   runtime.memory.save('owner', { text: 'synthetic work evidence' }, ['fixture-evidence']);
   for (let n = 0; n < 123; n++) store.put('work', { id: `synthetic-work-${n}`, person: 'owner', entryId: 'losna',

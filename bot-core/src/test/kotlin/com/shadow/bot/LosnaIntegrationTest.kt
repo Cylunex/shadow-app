@@ -119,6 +119,32 @@ class LosnaIntegrationTest {
             if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
         }
     }
+    @Test fun growthUsesRealPersonaAndEvidenceAuthoritiesThroughHttp() = runBlocking<Unit> {
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "growth")
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val api = HttpProductApi.fixture(process.inputStream.bufferedReader().readLine().toHttpUrl())
+            val hello = api.handshake(); assertTrue("growthSnapshots" in hello.capabilities)
+            val page = api.growth("losna")
+            assertEquals(hello.roles.single().personaId, page.personaId)
+            assertEquals("以后回复简短一点。", page.habits.single().quote)
+            assertEquals("合成现场录音", page.views.single().sourceTitle)
+            val unchanged = api.growth("losna", page.revision); assertTrue(unchanged.unchanged); assertTrue(unchanged.habits.isEmpty())
+            val persona = api.personas("losna")
+            val independent = api.savePersona(persona.copy(active = "warm", cards = persona.cards.map { if (it.id == "warm") it.copy(inheritIdentity = false) else it }))
+            val switched = api.growth("losna", page.revision); assertFalse(switched.unchanged); assertTrue(switched.views.isEmpty()); assertTrue(switched.habits.isEmpty())
+            api.savePersona(independent.copy(active = "default"))
+            val restored = api.growth("losna"); assertEquals(page.views, restored.views)
+            val memory = api.memories().single()
+            api.send(PendingCommand(UUID.randomUUID().toString(), "losna", "", 1, action = "memory.forget", memoryId = memory.id, expectedVersion = memory.version), hello.generation)
+            val forgotten = api.growth("losna", restored.revision)
+            assertFalse(forgotten.unchanged); assertTrue(forgotten.views.isEmpty()); assertEquals(1, forgotten.habits.size)
+        } finally {
+            process.outputStream.close()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
+        }
+    }
+
     @Test fun browsesAndCorrectsSharedMemoriesThroughActualProductHttp() = runBlocking<Unit> {
         val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "memories")
             .redirectError(ProcessBuilder.Redirect.INHERIT).start()

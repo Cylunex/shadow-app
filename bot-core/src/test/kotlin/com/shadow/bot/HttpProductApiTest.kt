@@ -108,6 +108,21 @@ class HttpProductApiTest {
         }
     }
 
+    @Test fun growthDecodesConditionalMetadataAndLegacyProjectionWithoutGuessingMaturity() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val body = """{"entryId":"doll","persona":{"id":"warm","name":"合成人格"},"habits":[{"text":"简短回复","quote":"今天短点","scope":"day"}],"views":[{"topic":"阅读","text":"合成看法","maturity":"developing","evidenceQuote":"合成摘录","sourceTitle":"材料"}]}"""
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(body))
+            val api = HttpProductApi.fixture(server.url("/dsh/")); val page = api.growth("doll")
+            assertEquals("/dsh/losna/agent/api/growth?entryId=doll", server.takeRequest().path)
+            assertNull(page.revision); assertNull(page.epoch); assertEquals("day", page.habits.single().scope)
+            assertEquals("developing", page.views.single().maturity)
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"entryId":"doll","persona":{"id":"warm","name":"合成人格"},"habits":[],"views":[],"generation":"host","epoch":9,"revision":"r1","unchanged":true}"""))
+            val unchanged = api.growth("doll", "r1")
+            assertEquals("r1", server.takeRequest().requestUrl!!.queryParameter("ifRevision"))
+            assertEquals(9L, unchanged.epoch); assertTrue(unchanged.unchanged)
+        }
+    }
+
     @Test fun nativeBearerAppliesToJsonAndFilesWithoutRedirectOrWriteReplay() = runBlocking<Unit> {
         MockWebServer().use { server ->
             var calls = 0

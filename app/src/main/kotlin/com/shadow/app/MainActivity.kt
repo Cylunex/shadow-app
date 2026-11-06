@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
             Destination.MessageContext -> Destination.Search
             Destination.WorkDetail -> Destination.Progress
             Destination.ArtifactPreview -> Destination.WorkDetail
-            Destination.Search, Destination.Progress, Destination.Persona, Destination.Memories, Destination.AttachmentPreview -> Destination.Chat
+            Destination.Search, Destination.Progress, Destination.Persona, Destination.Memories, Destination.Growth, Destination.AttachmentPreview -> Destination.Chat
             else -> Destination.Conversations
         })
     }
@@ -133,6 +133,7 @@ class MainActivity : ComponentActivity() {
             Destination.ArtifactPreview -> "成果预览"
             Destination.AttachmentPreview -> "附件"
             Destination.Memories -> "共享记忆"
+            Destination.Growth -> "成长手记"
             Destination.Persona -> "角色与人设"
         }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }, navigationIcon = {
             if (state.destination != Destination.Conversations && state.bot.connected) IconButton(onClick = { back() }) {
@@ -151,6 +152,7 @@ class MainActivity : ComponentActivity() {
                         if ("contactArchive" in state.bot.capabilities) DropdownMenuItem(text = { Text(if (role?.archived == true) "移回聊天列表" else "归档聊天") }, onClick = { menuOpen = false; vm.archiveContact() })
                         if ("personas" in state.bot.capabilities) DropdownMenuItem(text = { Text("角色与人设") }, onClick = { menuOpen = false; vm.navigate(Destination.Persona) })
                         if ("memories" in state.bot.capabilities) DropdownMenuItem(text = { Text("共享记忆") }, onClick = { menuOpen = false; vm.navigate(Destination.Memories) })
+                        if ("growth" in state.bot.capabilities) DropdownMenuItem(text = { Text("成长手记") }, onClick = { menuOpen = false; vm.navigate(Destination.Growth) })
                     }
                 }
             }
@@ -176,6 +178,7 @@ class MainActivity : ComponentActivity() {
                 Destination.MessageContext -> MessageContextScreen(state, vm)
                 Destination.AttachmentPreview -> AttachmentPreviewScreen(state, vm)
                 Destination.Memories -> MemoryScreen(state, vm)
+                Destination.Growth -> GrowthScreen(state, vm)
                 Destination.Persona -> PersonaEditor(state, vm)
             }
         }

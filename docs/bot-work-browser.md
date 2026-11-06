@@ -2,6 +2,8 @@
 
 2026-11-06。核对起点为 App `42fb1a8`、Losna `964ce91`；手机已安装 0.12.0（22），本轮源码升至 0.13.0（23）。本轮仅开发、合成验证、提交与推送，没有部署、APK 构建、安装或生产身份变更。
 
+后续 0.14.0 源码已补齐[手机成长手记](bot-growth-notebook.md)；下表保留本轮核对时点，持续事项与浏览器接手仍待接入。
+
 ## 按现行范围核对
 
 以[初期 Bot 方案](initial-bot-plan.md)、[日常体验](bot-everyday-experience.md)及 Losna 的设计、第一版计划、Hermes 交接、NAS 插件重构和 P0–P5 执行记录为依据，再核对实际 Product、Work、Memory、Personas 和原生页面。较早阶段的“尚未部署”只是当时状态；当前发布证据见[实现记录](implementation-status.md)。

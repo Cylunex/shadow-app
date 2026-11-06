@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
+    suspend fun growth(entryId: String, ifRevision: String? = null): GrowthPage = throw ApiFailure(503, "当前服务尚未开放成长手记。")
     suspend fun workPage(entryId: String, query: String = "", status: String = "", before: String? = null, ifRevision: String? = null, limit: Int = 50): WorkPage =
         throw ApiFailure(503, "当前服务尚未开放事项检索。")
     suspend fun messageContext(entryId: String, anchor: MessageRef, epoch: Long, before: String? = null, after: String? = null, limit: Int = 30): MessageContextPage = throw ApiFailure(503, "当前服务尚未开放消息定位。")
@@ -90,6 +91,15 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
     suspend fun nativeLoginConfig(): JSONObject = request("auth/native/config")
     suspend fun nativeIdentity(): JSONObject = request("auth/me")
     override suspend fun createRole(id: String, name: String): String = request("roles", JSONObject().put("id", id).put("name", name)).getString("entryId")
+    override suspend fun growth(entryId: String, ifRevision: String?): GrowthPage {
+        val row = request("growth?entryId=${encode(entryId)}" + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: ""))
+        val persona = row.getJSONObject("persona")
+        return GrowthPage(row.getString("entryId"), persona.getString("id"), persona.getString("name"),
+            row.getJSONArray("habits").objects().map { GrowthHabit(it.getString("text"), it.string("quote"), it.string("scope")) },
+            row.getJSONArray("views").objects().map { GrowthView(it.getString("topic"), it.getString("text"), it.string("maturity"), it.string("evidenceQuote"), it.string("sourceTitle")) },
+            row.string("generation").takeIf(String::isNotEmpty), if (row.has("epoch")) row.getLong("epoch") else null,
+            row.string("revision").takeIf(String::isNotEmpty), row.optBoolean("unchanged"))
+    }
     override suspend fun handshake(): Handshake {
         val row = request("handshake")
         require(row.getInt("protocolVersion") == 1) { "服务协议不兼容，请更新客户端。" }

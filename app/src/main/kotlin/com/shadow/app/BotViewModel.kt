@@ -24,6 +24,7 @@ sealed interface Destination {
     data object ArtifactPreview : Destination
     data object Progress : Destination
     data object Memories : Destination
+    data object Growth : Destination
     data object Persona : Destination
     data object AttachmentPreview : Destination
 }
@@ -86,6 +87,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         val saved = store.read()
         uploads.values.forEach { it.cancel() }; uploads.clear()
         polling?.cancel(); collector?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true)
+        repository?.clearGrowth(close = true)
         val repo = BotRepository(api, store); repository = repo
         mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, viewedWorkId = null, viewedArtifactId = null,
             drafts = saved.drafts, workDrafts = saved.workDrafts,
@@ -185,9 +187,10 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 viewModelScope.launch { repository?.loadMemories(silent = true) }
             }
             if (mutable.value.destination == Destination.Progress) openWorks()
+            if (mutable.value.destination == Destination.Growth) openGrowth()
             startPolling()
         }
-        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true) }
+        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true); repository?.clearGrowth(close = true) }
     }
     private fun startPolling() {
         polling?.cancel()
@@ -199,6 +202,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                     repository?.poll()
                     if (mutable.value.destination == Destination.Memories) repository?.loadMemories(silent = true)
                     if (mutable.value.destination == Destination.Progress) repository?.loadWorks(silent = true)
+                    if (mutable.value.destination == Destination.Growth) repository?.loadGrowth(silent = true)
                 }
             }
         }
@@ -289,9 +293,23 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (destination == Destination.Memories) searchMemories("", "")
         if (destination == Destination.Progress) openWorks()
         else if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) repository?.clearWorks(close = true)
+        if (destination == Destination.Growth) openGrowth() else repository?.clearGrowth(close = true)
         if (destination == Destination.Persona) mutable.value.bot.selected?.let { id -> load { val value = repository?.persona(id); mutable.value = mutable.value.copy(persona = value, personaDraft = value) } }
     }
     fun inspectMemory(id: String) { viewModelScope.launch { repository?.inspectMemory(id) } }
+    private fun openGrowth() {
+        if (repository?.state?.value?.growth?.active != true) repository?.beginGrowth()
+        viewModelScope.launch { repository?.loadGrowth() }
+    }
+    fun reloadGrowth() { viewModelScope.launch { repository?.loadGrowth() } }
+    fun discussGrowth(page: GrowthPage, kind: String, index: Int) {
+        if (mutable.value.connecting || mutable.value.destination != Destination.Growth || mutable.value.bot.selected != page.entryId ||
+            repository?.state?.value?.growth?.page != page) return
+        try {
+            val text = SharedText.append(mutable.value.drafts[page.entryId].orEmpty(), page.discussion(kind, index))
+            if (saveDrafts(mutable.value.copy(drafts = mutable.value.drafts + (page.entryId to text)))) navigate(Destination.Chat)
+        } catch (error: IllegalArgumentException) { mutable.value = mutable.value.copy(notice = error.message) }
+    }
     private fun openWorks() {
         val browser = repository?.state?.value?.workBrowser ?: return
         if (!browser.active) repository?.beginWorks(browser.query, browser.status)

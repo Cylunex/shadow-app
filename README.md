@@ -16,6 +16,7 @@ Android Kotlin / Compose；JDK 17、Android SDK 36。`app` 提供原生界面和
 
 ## 文档
 
+- [手机成长手记与依据回查](docs/bot-growth-notebook.md)
 - [Bot / Agent 缺口核对与事项检索](docs/bot-work-browser.md)
 
 - [Bot 日常体验与逐项设计参考](docs/bot-everyday-experience.md)
