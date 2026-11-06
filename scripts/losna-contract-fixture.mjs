@@ -14,6 +14,7 @@ const root = await realpath(await mkdtemp(join(tmpdir(), 'shadow-app-contract-')
 await writeFile(join(root, 'config.json'), JSON.stringify({ version: 1, stateDirectory: root, batchMs: 100,
   qq: { mode: 'disabled' }, general: { enabled: true }, memory: { autoLearn: false } }));
 const config = loadConfig(join(root, 'config.json'), {});
+if (process.argv[4] === 'commitments') config.companionContinuity = { enabled: true };
 if (process.argv[4] === 'growth') config.companionBehavior = { enabled: true };
 let lifeServer, life;
 if (process.argv[3]) {
@@ -47,6 +48,14 @@ const runtime = new Runtime({ store, memory: new Memory(store), config,
 store.put('sources', { id: 'fixture-evidence', person: 'owner', text: 'synthetic work request', state: 'processed' });
 store.put('work', { id: 'fixture-work', person: 'owner', entryId: 'losna', domain: 'general', workspace: 'scratch',
   goal: 'synthetic report', state: 'waiting', paused: true, sourceIds: ['fixture-evidence'], plan: [{ content: 'write report', status: 'pending' }] });
+if (process.argv[4] === 'commitments') {
+  const source = store.get('sources', 'fixture-evidence');
+  store.put('sources', { ...source, ...runtime.origin([], { entryId: 'losna' }), receivedAt: Date.now() });
+  runtime.continuity.manage(runtime.context('owner', ['fixture-evidence'], 'chat'), {
+    action: 'create', goal: '合成长期阅读目标', workId: 'fixture-work', completion: 'user_judgment',
+  });
+  runtime.memory.save('owner', { text: '合成持续事项来源' }, ['fixture-evidence']);
+}
 if (process.argv[4] === 'growth') {
   const now = Date.now(), persona = runtime.personas.resolve('losna');
   const source = store.put('sources', { id: 'growth-habit-source', person: 'owner', ...runtime.origin([], { entryId: 'losna' }),
@@ -79,7 +88,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (!url.pathname.startsWith('/losna/agent/')) { res.writeHead(404); res.end(); return; }
     await handleProduct(runtime.product, req, res, url.pathname.slice('/losna'.length), url.searchParams);
-    if (req.method === 'POST' && url.pathname.endsWith('/commands')) runtime.runWork('fixture-work').catch(() => {});
+    if (process.argv[4] !== 'commitments' && req.method === 'POST' && url.pathname.endsWith('/commands')) runtime.runWork('fixture-work').catch(() => {});
   } catch { res.writeHead(500); res.end(); }
 });
 server.listen(0, '127.0.0.1', () => process.stdout.write(`http://127.0.0.1:${server.address().port}/\n`));

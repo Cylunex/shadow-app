@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
+    suspend fun commitments(entryId: String, ifRevision: String? = null): CommitmentPage = throw ApiFailure(503, "当前服务尚未开放持续事项管理。")
     suspend fun growth(entryId: String, ifRevision: String? = null): GrowthPage = throw ApiFailure(503, "当前服务尚未开放成长手记。")
     suspend fun workPage(entryId: String, query: String = "", status: String = "", before: String? = null, ifRevision: String? = null, limit: Int = 50): WorkPage =
         throw ApiFailure(503, "当前服务尚未开放事项检索。")
@@ -91,6 +92,17 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
     suspend fun nativeLoginConfig(): JSONObject = request("auth/native/config")
     suspend fun nativeIdentity(): JSONObject = request("auth/me")
     override suspend fun createRole(id: String, name: String): String = request("roles", JSONObject().put("id", id).put("name", name)).getString("entryId")
+    override suspend fun commitments(entryId: String, ifRevision: String?): CommitmentPage {
+        val row = request("commitments?entryId=${encode(entryId)}" + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: ""))
+        return CommitmentPage(row.getString("entryId"), row.getString("generation"), row.getLong("epoch"), row.getString("revision"),
+            row.getJSONArray("items").objects().map { item ->
+                val actions = item.getJSONArray("allowedActions")
+                Commitment(item.getString("id"), item.getString("entryId"), item.getString("goal"), item.getString("state"), item.getString("kind"),
+                    item.getString("completion"), item.getLong("version"), item.string("result"), item.optBoolean("resultTruncated"),
+                    item.string("waitKind"), item.string("waitReason"), if (item.has("nextCheckAt") && !item.isNull("nextCheckAt")) item.getLong("nextCheckAt") else null,
+                    item.string("workId").takeIf(String::isNotEmpty), (0 until actions.length()).map(actions::getString).toSet())
+            }, row.getBoolean("hasMore"), row.optBoolean("unchanged"))
+    }
     override suspend fun growth(entryId: String, ifRevision: String?): GrowthPage {
         val row = request("growth?entryId=${encode(entryId)}" + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: ""))
         val persona = row.getJSONObject("persona")
@@ -155,6 +167,7 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         val body = JSONObject().put("id", message.id).put("generation", generation).put("action", message.action).put("entryId", message.entryId)
         if (message.action != "work.cancel") body.put("text", message.text)
         message.workId?.let { body.put("workId", it).put("expectedVersion", message.expectedVersion) }
+        message.commitmentId?.let { body.put("commitmentId", it).put("expectedVersion", message.expectedVersion) }
         message.memoryId?.let { body.put("memoryId", it).put("expectedVersion", message.expectedVersion) }
         if (message.attachments.isNotEmpty()) body.put("attachmentIds", JSONArray(message.attachments.map { it.id }))
         val result = request("commands", body)

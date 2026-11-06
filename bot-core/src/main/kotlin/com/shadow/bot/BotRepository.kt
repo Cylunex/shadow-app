@@ -19,6 +19,7 @@ data class BotState(
     val memoryBrowser: MemoryBrowserState = MemoryBrowserState(),
     val workBrowser: WorkBrowserState = WorkBrowserState(),
     val growth: GrowthState = GrowthState(),
+    val commitments: CommitmentState = CommitmentState(),
 )
 
 /** Serializes user writes with snapshot/event refresh; cursors are never shared between contacts. */
@@ -41,6 +42,45 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private var memoryRequest = 0L
     private var memoryDetailRequest = 0L
     private var workRequest = 0L
+    private var commitmentRequest = 0L
+
+    fun clearCommitments(close: Boolean = false) {
+        commitmentRequest++
+        mutable.value = mutable.value.copy(commitments = CommitmentState(active = !close && mutable.value.commitments.active))
+    }
+    fun beginCommitments() {
+        clearCommitments()
+        mutable.value = mutable.value.copy(commitments = CommitmentState(active = true))
+    }
+    suspend fun loadCommitments(silent: Boolean = false) {
+        val request = commitmentRequest
+        val entry = mutable.value.selected ?: return
+        operation(silent = true) {
+            val old = mutable.value.commitments
+            if (!old.active || request != commitmentRequest || entry != mutable.value.selected || mutable.value.needsLogin || "commitmentDetails" !in mutable.value.capabilities) return@operation
+            mutable.value = mutable.value.copy(commitments = old.copy(loading = !silent, error = null))
+            try {
+                val page = api.commitments(entry, if (silent) old.page?.revision else null)
+                if (!currentSession() || request != commitmentRequest || entry != mutable.value.selected) return@operation
+                check(page.entryId == entry)
+                if (page.generation != generation || page.epoch != memoryEpoch) throw ApiFailure(409, "持续事项已变化，正在重新读取。")
+                check(page.items.all { it.entryId == entry })
+                if (page.unchanged) check(silent && old.page != null && page.revision == old.page.revision)
+                else mutable.value = mutable.value.copy(commitments = old.copy(page = page, error = null))
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (!currentSession() || request != commitmentRequest || entry != mutable.value.selected) return@operation
+                // Withdraw controls when the current authority cannot be verified.
+                mutable.value = mutable.value.copy(commitments = mutable.value.commitments.copy(page = null,
+                    error = if (error is ApiFailure) error.message else "暂时无法读取持续事项，请重试。"))
+                if (error is ApiFailure && error.status in setOf(401, 403)) throw error
+                if (error is ApiFailure && error.status == 409) refreshLocked()
+            } finally {
+                if (request == commitmentRequest) mutable.value = mutable.value.copy(commitments = mutable.value.commitments.copy(loading = false))
+            }
+        }
+    }
+
     private var growthRequest = 0L
 
     fun clearGrowth(close: Boolean = false) {
@@ -267,6 +307,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             mutable.value = mutable.value.copy(liveReply = null)
             val expired = error is ApiFailure && error.status == 401
             if (error is ApiFailure && error.status in setOf(401, 403)) {
+                clearCommitments()
                 clearGrowth()
                 clearWorks()
                 clearMemories()
@@ -288,6 +329,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun refreshLocked(refreshDetails: Boolean = true) {
         val hello = api.handshake()
         if (!currentSession()) return
+        if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "commitmentDetails" !in hello.capabilities) clearCommitments()
         val currentRole = mutable.value.roles.find { it.id == mutable.value.selected }
         val nextRole = hello.roles.find { it.id == mutable.value.selected }
         if (generation != hello.generation || memoryEpoch != hello.memoryEpoch || "growth" !in hello.capabilities ||
@@ -333,6 +375,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             nextCursor = snapshot.cursor
             // Replace authoritative content, including withdrawals, in one publication.
             if (memoryEpoch != snapshot.memoryEpoch || generation != hello.generation) {
+                clearCommitments()
                 clearGrowth()
                 clearWorks()
                 clearMemories()
@@ -356,6 +399,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             capabilities = hello.capabilities, selected = selected, messages = messages, works = works, historyCursor = olderCursor, syncIssue = null, offline = false, cachedAt = 0)
         if (selected == null || "messageContext" !in hello.capabilities) clearMessageContext()
         if (selected == null) clearWorks(close = true)
+        if (selected == null) clearCommitments(close = true)
         if (selected == null) clearGrowth(close = true)
         runCatching {
             val server = boundSession?.baseUrl
@@ -370,6 +414,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     }
     suspend fun refresh(silent: Boolean = false) = operation(silent = silent && mutable.value.connected) { refreshLocked() }
     suspend fun select(entryId: String?) = operation {
+        clearCommitments(close = true)
         clearGrowth(close = true)
         clearWorks(close = true)
         clearMemories(close = true)
@@ -447,6 +492,8 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
                     .filterNot { draft -> consume.attachments.any { it.id == draft.id } }))
             else saved.copy(workDrafts = if (consume.action == "work.resume" && saved.workDrafts[consume.workId]?.trim() == consume.text)
                 saved.workDrafts - requireNotNull(consume.workId) else saved.workDrafts)
+            if (consume?.action?.let(::commitmentNeedsText) == true && saved.commitmentDrafts[consume.commitmentId]?.trim() == consume.text)
+                saved = saved.copy(commitmentDrafts = saved.commitmentDrafts - requireNotNull(consume.commitmentId))
             saved
         } // disk commit precedes network and UI acknowledgement
         mutable.value = mutable.value.copy(pending = pending)
@@ -483,6 +530,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         refreshLocked(refreshDetails = false)
         require(mutable.value.roles.any { it.id == message.entryId }) { "原角色已不可用，消息尚未重发。" }
         if (message.action.startsWith("work.")) require("workDetails" in mutable.value.capabilities) { "当前服务不支持原生事项操作。" }
+        if (message.action.startsWith("commitment.")) require("commitmentDetails" in mutable.value.capabilities) { "当前服务不支持持续事项管理。" }
         if (message.action.startsWith("memory.")) require("memoryActions" in mutable.value.capabilities) { "当前服务不支持逐条记忆操作。" }
         api.send(message, requireNotNull(generation))
         persist(mutable.value.pending.filterNot { it.id == message.id })
@@ -527,6 +575,22 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         mutable.value = mutable.value.copy(artifactText = null)
         refreshWorkLocked()
     }
+    suspend fun submitCommitment(item: Commitment, action: String, text: String): Boolean {
+        var queued = false
+        operation {
+            require(mutable.value.selected == item.entryId && mutable.value.commitments.page?.items?.contains(item) == true) { "持续事项已变化，请重新读取。" }
+            require(action in commitmentActions && action in item.allowedActions) { "当前状态不支持该操作。" }
+            require(!commitmentNeedsText(action) || text.isNotBlank() && text.length <= 4000) { "请填写 1–4000 字的当前要求。" }
+            require(mutable.value.pending.none { it.commitmentId == item.id }) { "请先核对这项委托的待发操作。" }
+            require(mutable.value.pending.size < 20) { "请先处理已有待发记录。" }
+            val command = PendingCommand(UUID.randomUUID().toString(), item.entryId, if (commitmentNeedsText(action)) text.trim() else "",
+                System.currentTimeMillis(), action = action, expectedVersion = item.version, commitmentId = item.id)
+            persist(mutable.value.pending + command, consume = command)
+            queued = true
+            try { transmit(command) } finally { clearCommitments() }
+        }
+        return queued
+    }
     suspend fun submitWork(action: String, text: String): Boolean {
         val detail = mutable.value.workDetail
         var queued = false
@@ -546,6 +610,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     private suspend fun <T> guardedRead(block: suspend () -> T): T = mutex.withLock {
         try { block() } catch (error: ApiFailure) {
             if (error.status in setOf(401, 403)) {
+                clearCommitments()
                 clearGrowth()
                 clearWorks()
                 clearMemories()
@@ -578,6 +643,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     suspend fun removePending(id: String) = operation { persist(mutable.value.pending.filterNot { it.id == id }) }
     suspend fun createRole(id: String, name: String) = operation {
         val entryId = api.createRole(id, name)
+        clearCommitments(close = true)
         clearGrowth(close = true)
         clearWorks(close = true)
         mutable.value = mutable.value.copy(selected = entryId, messages = emptyList(), works = emptyList(), liveReply = null, workBrowser = WorkBrowserState())

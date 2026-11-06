@@ -38,17 +38,18 @@ data class LiveReply(val id: String, val text: String)
 data class LiveReplyState(val generation: String, val entryId: String, val reply: LiveReply?)
 data class Events(val generation: String, val cursor: Long, val changed: Boolean, val resetRequired: Boolean, val hasMore: Boolean)
 data class PendingCommand(val id: String, val entryId: String, val text: String, val createdAt: Long,
-    val action: String = "message", val workId: String? = null, val expectedVersion: Long? = null, val attachments: List<Attachment> = emptyList(), val memoryId: String? = null) {
+    val action: String = "message", val workId: String? = null, val expectedVersion: Long? = null, val attachments: List<Attachment> = emptyList(), val memoryId: String? = null, val commitmentId: String? = null) {
     init {
-        require(action in setOf("message", "work.resume", "work.cancel", "memory.correct", "memory.quiet", "memory.forget"))
+        require(action in setOf("message", "work.resume", "work.cancel", "memory.correct", "memory.quiet", "memory.forget") + commitmentActions)
         require(when {
-            action == "message" -> workId == null && memoryId == null && expectedVersion == null
-            action.startsWith("memory.") -> workId == null && !memoryId.isNullOrBlank() && expectedVersion != null && expectedVersion >= 0
-            else -> !workId.isNullOrBlank() && memoryId == null && expectedVersion != null && expectedVersion >= 0
+            action == "message" -> commitmentId == null && workId == null && memoryId == null && expectedVersion == null
+            action.startsWith("commitment.") -> workId == null && memoryId == null && !commitmentId.isNullOrBlank() && expectedVersion != null && expectedVersion >= 0
+            action.startsWith("memory.") -> commitmentId == null && workId == null && !memoryId.isNullOrBlank() && expectedVersion != null && expectedVersion >= 0
+            else -> commitmentId == null && !workId.isNullOrBlank() && memoryId == null && expectedVersion != null && expectedVersion >= 0
         })
         require(attachments.size <= 8 && attachments.map { it.id }.distinct().size == attachments.size && (action == "message" || attachments.isEmpty()))
     }
-    val label: String get() = when (action) { "work.resume" -> "继续事项"; "work.cancel" -> "取消事项"; "memory.correct" -> "更正记忆"; "memory.quiet" -> "以后少提"; "memory.forget" -> "遗忘记忆"; else -> "消息" }
+    val label: String get() = when (action) { "work.resume" -> "继续事项"; "work.cancel" -> "取消事项"; "memory.correct" -> "更正记忆"; "memory.quiet" -> "以后少提"; "memory.forget" -> "遗忘记忆"; else -> if (action.startsWith("commitment.")) commitmentActionLabel(action) else "消息" }
 }
 data class InboxItem(val entryId: String, val text: String, val at: Long, val activeWorks: Int, val messageId: String = "", val messageRole: String = "", val workSequence: Long = 0)
 data class Inbox(val generation: String, val items: List<InboxItem>)
@@ -69,7 +70,7 @@ data class AttachmentDraft(val id: String, val uri: String = "", val name: Strin
     val error: String? = null, val uploaded: Attachment? = null, val mediaType: String = "application/octet-stream", val localReady: Boolean = false)
 data class SavedState(val session: Session? = null, val pending: List<PendingCommand> = emptyList(),
     val drafts: Map<String, String> = emptyMap(), val workDrafts: Map<String, String> = emptyMap(),
-    val attachmentDrafts: Map<String, List<AttachmentDraft>> = emptyMap())
+    val attachmentDrafts: Map<String, List<AttachmentDraft>> = emptyMap(), val commitmentDrafts: Map<String, String> = emptyMap())
 interface StateStore {
     fun read(): SavedState
     fun write(state: SavedState)
@@ -85,12 +86,12 @@ internal fun JSONObject.string(key: String) = if (isNull(key)) "" else optString
 
 object StateCodec {
     fun encode(state: SavedState): String = JSONObject().apply {
-        put("version", 5)
+        put("version", 6)
         state.session?.let { session -> put("session", JSONObject().put("baseUrl", session.baseUrl).put("cookies", JSONArray(session.cookies)).put("id", session.id).apply {
             session.oidc?.let { put("oidc", JSONObject().put("issuer", it.issuer).put("subject", it.subject).put("clientId", it.clientId).put("name", it.name).put("authState", it.authState)) }
         }) }
-        put("pending", JSONArray(state.pending.map { JSONObject().put("id", it.id).put("entryId", it.entryId).put("text", it.text).put("createdAt", it.createdAt).put("action", it.action).put("workId", it.workId).put("expectedVersion", it.expectedVersion).put("memoryId", it.memoryId).put("attachments", JSONArray(it.attachments.map(::attachmentJson))) }))
-        put("drafts", JSONObject(state.drafts)); put("workDrafts", JSONObject(state.workDrafts))
+        put("pending", JSONArray(state.pending.map { JSONObject().put("id", it.id).put("entryId", it.entryId).put("text", it.text).put("createdAt", it.createdAt).put("action", it.action).put("workId", it.workId).put("expectedVersion", it.expectedVersion).put("memoryId", it.memoryId).put("commitmentId", it.commitmentId).put("attachments", JSONArray(it.attachments.map(::attachmentJson))) }))
+        put("drafts", JSONObject(state.drafts)); put("workDrafts", JSONObject(state.workDrafts)); put("commitmentDrafts", JSONObject(state.commitmentDrafts))
         put("attachmentDrafts", JSONObject().apply { state.attachmentDrafts.forEach { (entry, drafts) ->
             put(entry, JSONArray(drafts.map { draft -> JSONObject().put("id", draft.id).put("name", draft.name)
                 .put("mediaType", draft.mediaType).put("localReady", draft.localReady)
@@ -99,7 +100,7 @@ object StateCodec {
     }.toString()
     fun decode(raw: String): SavedState {
         val json = JSONObject(raw)
-        require(json.getInt("version") in 1..5) { "本地资料版本不受支持" }
+        require(json.getInt("version") in 1..6) { "本地资料版本不受支持" }
         val session = json.optJSONObject("session")?.let { row ->
             val cookies = row.getJSONArray("cookies")
             Session(row.getString("baseUrl"), (0 until cookies.length()).map(cookies::getString), row.optJSONObject("oidc")?.let {
@@ -109,8 +110,8 @@ object StateCodec {
         return SavedState(session, json.getJSONArray("pending").objects().map {
             PendingCommand(it.getString("id"), it.getString("entryId"), it.getString("text"), it.getLong("createdAt"), it.optString("action", "message"),
                 it.string("workId").takeIf(String::isNotEmpty), if (it.has("expectedVersion") && !it.isNull("expectedVersion")) it.getLong("expectedVersion") else null,
-                (it.optJSONArray("attachments") ?: JSONArray()).objects().map(::parseAttachment), it.string("memoryId").takeIf(String::isNotEmpty))
-        }, drafts = stringMap(json.optJSONObject("drafts")), workDrafts = stringMap(json.optJSONObject("workDrafts")),
+                (it.optJSONArray("attachments") ?: JSONArray()).objects().map(::parseAttachment), it.string("memoryId").takeIf(String::isNotEmpty), it.string("commitmentId").takeIf(String::isNotEmpty))
+        }, drafts = stringMap(json.optJSONObject("drafts")), workDrafts = stringMap(json.optJSONObject("workDrafts")), commitmentDrafts = stringMap(json.optJSONObject("commitmentDrafts")),
             attachmentDrafts = json.optJSONObject("attachmentDrafts")?.let { entries -> entries.keys().asSequence().associateWith { entry ->
                 entries.getJSONArray(entry).objects().map { row ->
                     val uploaded = row.optJSONObject("uploaded")?.let(::parseAttachment)

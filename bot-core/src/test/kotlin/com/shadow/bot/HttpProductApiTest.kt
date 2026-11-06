@@ -7,6 +7,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HttpProductApiTest {
+    @Test fun commitmentsUseScopedConditionalReadAndOriginalCommandTarget() = runBlocking {
+        MockWebServer().use { server ->
+            val api = HttpProductApi.fixture(server.url("/proxy/"))
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"entryId":"losna","generation":"host","epoch":2,"revision":"rev","hasMore":true,"items":[{"id":"c","entryId":"losna","goal":"阅读目标","state":"waiting","kind":"commitment","completion":"user_judgment","version":7,"result":"第一篇完成","resultTruncated":true,"waitKind":"user_input","waitReason":"等待材料","nextCheckAt":1234,"workId":"w","allowedActions":["commitment.pause","commitment.complete"]}]}"""))
+            val page = api.commitments("losna", "old")
+            assertEquals("/proxy/losna/agent/api/commitments?entryId=losna&ifRevision=old", server.takeRequest().path)
+            assertTrue(page.hasMore); assertEquals(1234L, page.items.single().nextCheckAt); assertTrue(page.items.single().resultTruncated)
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"accepted":true,"sourceId":"s"}"""))
+            api.send(PendingCommand("command-one", "losna", "", 1, action = "commitment.pause", commitmentId = "c", expectedVersion = 7), "host")
+            val body = org.json.JSONObject(server.takeRequest().body.readUtf8())
+            assertEquals("c", body.getString("commitmentId")); assertEquals(7L, body.getLong("expectedVersion")); assertFalse(body.has("workId"))
+        }
+    }
     @Test fun mountsHeadersAndCommandPayloadMatchProductProtocol() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"accepted":true,"sourceId":"source-one"}"""))

@@ -137,6 +137,52 @@ class BotScreenTest {
         screenshot("works-large-type-320")
     }
 
+    private fun commitmentPage() = CommitmentPage("assistant", "host", 0, "r1", listOf(Commitment("c", "assistant", "一起读完这本书", "waiting", "commitment", "ongoing", 1,
+        "已经读完开篇", false, "user_input", "等你提供下一章材料", null, "w", setOf("commitment.pause", "commitment.resume", "commitment.cancel"))), false)
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun commitmentsShowWaitAndDistinctControlsOnNarrowScreen() {
+        val vm = model(); val page = commitmentPage()
+        compose.setContent { BotTheme { BotScreen(ScreenState(destination = Destination.Commitments,
+            bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "commitmentDetails", commitments = CommitmentState(active = true, page = page))), vm) } }
+        compose.onNodeWithText("等你提供下一章材料").assertIsDisplayed()
+        screenshot("commitments-wait-320")
+        compose.onNodeWithText("查看事项操作").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("当前完整目标与要求"))
+        compose.onNodeWithText("当前完整目标与要求").assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("继续跟进"))
+        compose.onNodeWithText("继续跟进").assertIsDisplayed(); compose.onNodeWithText("确认目标已完成").assertDoesNotExist()
+        screenshot("commitments-actions-320")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("查看关联工作与成果"))
+        compose.onNodeWithText("查看关联工作与成果").performScrollTo().assertIsDisplayed()
+    }
+    @Test fun commitmentRefreshKeepsExpandedControlsAndWithdrawsStaleContentButNotPendingReceipt() {
+        val vm = model(); val page = commitmentPage()
+        val screen = mutableStateOf(ScreenState(destination = Destination.Commitments,
+            bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "commitmentDetails", commitments = CommitmentState(active = true, page = page))))
+        compose.setContent { BotTheme { BotScreen(screen.value, vm) } }
+        compose.onNodeWithText("查看事项操作").performClick()
+        compose.runOnIdle { screen.value = screen.value.copy(bot = screen.value.bot.copy(commitments = CommitmentState(active = true, page = page.copy()))) }
+        compose.onNodeWithText("收起事项操作").assertIsDisplayed()
+        compose.runOnIdle { screen.value = screen.value.copy(bot = screen.value.bot.copy(commitments = CommitmentState(active = true, error = "读取失败"), pending = listOf(
+            PendingCommand("command-one", "assistant", "", 1, action = "commitment.pause", commitmentId = "c", expectedVersion = 1)))) }
+        compose.onNodeWithText("一起读完这本书").assertDoesNotExist()
+        compose.onNodeWithText("重试原操作").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("移除待发记录").performScrollTo().assertIsDisplayed()
+    }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun commitmentFiltersAndEmptyStateFitLargeType() {
+        val vm = model()
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(1f, 2f)) {
+                BotTheme { BotScreen(ScreenState(destination = Destination.Commitments,
+                    bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "commitmentDetails", commitments = CommitmentState(active = true, page = commitmentPage().copy(items = emptyList())))), vm) }
+            }
+        }
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("当前范围没有持续事项。"))
+        compose.onNodeWithText("当前范围没有持续事项。").assertIsDisplayed()
+        screenshot("commitments-empty-large-type-320")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("重新读取持续事项"))
+        compose.onNodeWithText("重新读取持续事项").assertIsDisplayed()
+    }
+
     private fun growthPage() = GrowthPage("assistant", "assistant", "小影",
         listOf(GrowthHabit("回复简短，通常一两句", "今天回复简短一点。", "day")),
         listOf(GrowthView("现场录音的留白", "我更喜欢保留一小段现场的安静。", "developing", "材料里保留了钟声之间的短暂安静。", "合成电台录音")), revision = "r1")

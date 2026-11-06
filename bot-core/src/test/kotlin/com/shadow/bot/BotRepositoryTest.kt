@@ -18,9 +18,83 @@ class BotRepositoryTest {
         override fun read() = saved
         override fun write(state: SavedState) { if (fail) throw IOException("disk unavailable"); saved = state }
     }
+    private fun commitment() = Commitment("commitment-one", "losna", "持续阅读目标", "waiting", "commitment", "ongoing", 1,
+        "已读完第一篇", false, "user_input", "等待下一篇材料", null, "work-one", setOf("commitment.resume", "commitment.cancel"))
+    private fun commitmentPage() = CommitmentPage("losna", "one", 0, "revision-one", listOf(commitment()), false)
+
+    @Test fun commitmentSnapshotsPreserveUnchangedAndWithdrawOnAuthorityChanges() = runBlocking {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginCommitments()
+        val page = commitmentPage(); api.commitmentPages.add(page); repo.loadCommitments()
+        api.commitmentPages.add(page.copy(items = emptyList(), unchanged = true)); repo.loadCommitments(silent = true)
+        assertSame(page, repo.state.value.commitments.page); assertEquals(listOf(null, page.revision), api.commitmentRequests)
+        api.epoch++; repo.refresh(); assertNull(repo.state.value.commitments.page)
+        api.commitmentPages.add(page.copy(epoch = api.epoch)); repo.loadCommitments()
+        api.generation = "two"; repo.refresh(); assertNull(repo.state.value.commitments.page)
+        api.commitmentPages.add(page.copy(epoch = api.epoch, generation = "two")); repo.loadCommitments()
+        api.commitmentsEnabled = false; repo.refresh(); assertNull(repo.state.value.commitments.page)
+    }
+    @Test fun commitmentLateReadsAndFailuresCannotRestoreOldControls() = runBlocking {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginCommitments()
+        api.commitmentPages.add(commitmentPage()); api.beforeCommitments = { repo.clearCommitments(close = true) }; repo.loadCommitments()
+        assertNull(repo.state.value.commitments.page)
+        api.beforeCommitments = {}; repo.beginCommitments(); api.commitmentPages.add(commitmentPage()); repo.loadCommitments()
+        api.commitmentError = IOException("offline"); repo.loadCommitments(silent = true); assertNull(repo.state.value.commitments.page)
+        assertNotNull(repo.state.value.commitments.error)
+        api.commitmentError = ApiFailure(401, "expired"); repo.loadCommitments(); assertTrue(repo.state.value.needsLogin)
+        assertNull(repo.state.value.commitments.page)
+    }
+    @Test fun commitmentQueuePersistsBeforeSendAndRetriesSameTargetVersionAfterLostReceipt() = runBlocking {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginCommitments()
+        api.commitmentPages.add(commitmentPage()); repo.loadCommitments()
+        store.saved = store.saved.copy(commitmentDrafts = mapOf("commitment-one" to "完整当前目标"), drafts = mapOf("losna" to "聊天未完"))
+        api.loseResponse = true
+        assertTrue(repo.submitCommitment(commitment(), "commitment.resume", "完整当前目标"))
+        val pending = repo.state.value.pending.single(); assertEquals("commitment-one", pending.commitmentId); assertEquals(1L, pending.expectedVersion)
+        assertTrue(store.saved.commitmentDrafts.isEmpty()); assertEquals("聊天未完", store.saved.drafts["losna"])
+        assertEquals(store.saved, StateCodec.decode(StateCodec.encode(store.saved)))
+        val restarted = BotRepository(api, store); restarted.retry(pending.id)
+        assertTrue(restarted.state.value.pending.isEmpty()); assertEquals(pending, api.commands.values.single())
+    }
+    @Test fun commitmentConflictOrDiskFailureNeverChangesIntentOrDropsUnqueuedDraft() = runBlocking {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginCommitments()
+        val page = commitmentPage(); api.commitmentPages.add(page); repo.loadCommitments()
+        store.saved = store.saved.copy(commitmentDrafts = mapOf("commitment-one" to "完整目标")); store.fail = true
+        assertFalse(repo.submitCommitment(commitment(), "commitment.resume", "完整目标")); assertTrue(api.commands.isEmpty())
+        assertEquals("完整目标", store.saved.commitmentDrafts["commitment-one"])
+        store.fail = false; api.detail = api.detail.copy(work = api.detail.work.copy(version = 2))
+        assertTrue(repo.submitCommitment(commitment(), "commitment.resume", "完整目标"))
+        val pending = repo.state.value.pending.single(); assertEquals(1L, pending.expectedVersion)
+        repo.retry(pending.id); assertEquals(pending, repo.state.value.pending.single()); assertTrue(api.commands.isEmpty())
+    }
+    @Test fun commitmentReadsRejectWrongEntryAndLateConnectionAndSelectionChanges() = runBlocking {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginCommitments()
+        api.commitmentPages.add(commitmentPage().copy(items = listOf(commitment().copy(entryId = "doll"))))
+        repo.loadCommitments(); assertNull(repo.state.value.commitments.page); assertNotNull(repo.state.value.commitments.error)
+        api.commitmentPages.add(commitmentPage()); repo.loadCommitments(); repo.select("doll")
+        assertNull(repo.state.value.commitments.page); assertFalse(repo.state.value.commitments.active)
+        repo.select("losna"); repo.beginCommitments(); api.commitmentPages.add(commitmentPage())
+        api.beforeCommitments = { store.saved = store.saved.copy(session = store.saved.session!!.copy(id = "replacement")) }
+        repo.loadCommitments(); assertNull(repo.state.value.commitments.page)
+    }
+    @Test fun commitmentStateCodecReadsOldFilesAndRejectsMixedTargets() {
+        val saved = SavedState(commitmentDrafts = mapOf("c" to ""), pending = listOf(PendingCommand("command-one", "losna", "", 1,
+            action = "commitment.pause", commitmentId = "c", expectedVersion = 9)))
+        assertEquals(saved, StateCodec.decode(StateCodec.encode(saved)))
+        assertTrue(StateCodec.decode("""{"version":5,"pending":[],"drafts":{}}""").commitmentDrafts.isEmpty())
+        assertThrows(IllegalArgumentException::class.java) { PendingCommand("command-one", "losna", "", 1,
+            action = "commitment.pause", commitmentId = "c", workId = "w", expectedVersion = 9) }
+    }
     private class Api : ProductApi {
         var generation = "one"
         var memoryBrowse = true
+        var commitmentsEnabled = true
+        val commitmentPages = java.util.ArrayDeque<CommitmentPage>()
+        val commitmentRequests = mutableListOf<String?>()
+        var commitmentError: Exception? = null
+        var beforeCommitments: suspend () -> Unit = {}
+        override suspend fun commitments(entryId: String, ifRevision: String?): CommitmentPage {
+            commitmentRequests.add(ifRevision); beforeCommitments(); commitmentError?.let { throw it }; return commitmentPages.removeFirst()
+        }
         var growthEnabled = true
         var growthSnapshots = true
         var personaId = ""
@@ -92,7 +166,7 @@ class BotRepositoryTest {
         override suspend fun handshake(): Handshake {
             handshakeError?.let { throw it }
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna", personaId = personaId), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + (if (memoryBrowse) setOf("memoryBrowse") else emptySet()) + (if (workBrowse) setOf("workBrowse") else emptySet()) + (if (growthEnabled) setOf("growth") else emptySet()) + (if (growthSnapshots) setOf("growthSnapshots") else emptySet()), epoch)
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna", personaId = personaId), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + (if (commitmentsEnabled) setOf("commitments", "commitmentDetails") else emptySet()) + (if (memoryBrowse) setOf("memoryBrowse") else emptySet()) + (if (workBrowse) setOf("workBrowse") else emptySet()) + (if (growthEnabled) setOf("growth") else emptySet()) + (if (growthSnapshots) setOf("growthSnapshots") else emptySet()), epoch)
         }
         var beforeSnapshot: () -> Unit = {}
         override suspend fun snapshot(entryId: String): Snapshot {

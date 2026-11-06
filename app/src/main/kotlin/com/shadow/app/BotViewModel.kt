@@ -24,6 +24,7 @@ sealed interface Destination {
     data object ArtifactPreview : Destination
     data object Progress : Destination
     data object Memories : Destination
+    data object Commitments : Destination
     data object Growth : Destination
     data object Persona : Destination
     data object AttachmentPreview : Destination
@@ -33,6 +34,7 @@ data class AttachmentPreviewData(val attachment: Attachment, val bytes: ByteArra
 data class ScreenState(val bot: BotState = BotState(), val destination: Destination = Destination.Conversations,
     val baseUrl: String = "", val loginName: String? = null, val connecting: Boolean = false, val notice: String? = null,
     val drafts: Map<String, String> = emptyMap(), val workDrafts: Map<String, String> = emptyMap(), val sharedText: String? = null, val viewedWorkId: String? = null, val viewedArtifactId: String? = null,
+    val commitmentDrafts: Map<String, String> = emptyMap(), val workOrigin: Destination = Destination.Progress,
     val persona: PersonaSettings? = null, val personaDraft: PersonaSettings? = null, val storageError: Boolean = false,
     val attachmentDrafts: Map<String, List<AttachmentDraft>> = emptyMap(), val sharedUris: List<String> = emptyList(),
     val attachmentPreview: AttachmentPreviewData? = null, val attachmentLoading: Boolean = false, val speaking: Boolean = false)
@@ -77,7 +79,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val saved = store.read()
             val session = saved.session
-            mutable.value = mutable.value.copy(baseUrl = session?.baseUrl.orEmpty(), drafts = saved.drafts, workDrafts = saved.workDrafts, attachmentDrafts = saved.attachmentDrafts)
+            mutable.value = mutable.value.copy(baseUrl = session?.baseUrl.orEmpty(), drafts = saved.drafts, workDrafts = saved.workDrafts, commitmentDrafts = saved.commitmentDrafts, attachmentDrafts = saved.attachmentDrafts)
             store.pruneDraftFiles()
             if (session != null) attach(authenticatedApi(getApplication(), store, session), session.baseUrl)
             else mutable.value = mutable.value.copy(destination = Destination.Settings)
@@ -87,10 +89,11 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         val saved = store.read()
         uploads.values.forEach { it.cancel() }; uploads.clear()
         polling?.cancel(); collector?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true)
+        repository?.clearCommitments(close = true)
         repository?.clearGrowth(close = true)
         val repo = BotRepository(api, store); repository = repo
         mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, viewedWorkId = null, viewedArtifactId = null,
-            drafts = saved.drafts, workDrafts = saved.workDrafts,
+            drafts = saved.drafts, workDrafts = saved.workDrafts, commitmentDrafts = saved.commitmentDrafts,
             attachmentDrafts = saved.attachmentDrafts.mapValues { (_, drafts) -> drafts.map { if (it.uploaded != null) it else it.copy(status = "failed", error = "连接已恢复，请重试上传。") } },
             attachmentPreview = null)
         collector = viewModelScope.launch { repo.state.collect { bot ->
@@ -118,7 +121,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (success) {
             try {
                 val saved = store.read(); val session = requireNotNull(saved.session)
-                mutable.value = mutable.value.copy(drafts = saved.drafts, workDrafts = saved.workDrafts, attachmentDrafts = saved.attachmentDrafts)
+                mutable.value = mutable.value.copy(drafts = saved.drafts, workDrafts = saved.workDrafts, commitmentDrafts = saved.commitmentDrafts, attachmentDrafts = saved.attachmentDrafts)
                 attach(authenticatedApi(getApplication(), store, session), session.baseUrl)
             } catch (_: Exception) { mutable.value = mutable.value.copy(notice = "无法读取登录资料，请重新登录。") }
         } else mutable.value = mutable.value.copy(notice = "登录未完成，原连接保持不变。")
@@ -187,10 +190,11 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 viewModelScope.launch { repository?.loadMemories(silent = true) }
             }
             if (mutable.value.destination == Destination.Progress) openWorks()
+            if (mutable.value.destination == Destination.Commitments) openCommitments()
             if (mutable.value.destination == Destination.Growth) openGrowth()
             startPolling()
         }
-        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true); repository?.clearGrowth(close = true) }
+        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true); repository?.clearGrowth(close = true); repository?.clearCommitments(close = true) }
     }
     private fun startPolling() {
         polling?.cancel()
@@ -202,6 +206,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                     repository?.poll()
                     if (mutable.value.destination == Destination.Memories) repository?.loadMemories(silent = true)
                     if (mutable.value.destination == Destination.Progress) repository?.loadWorks(silent = true)
+                    if (mutable.value.destination == Destination.Commitments) repository?.loadCommitments(silent = true)
                     if (mutable.value.destination == Destination.Growth) repository?.loadGrowth(silent = true)
                 }
             }
@@ -256,7 +261,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissShare() { mutable.value = mutable.value.copy(sharedText = null, sharedUris = emptyList()) }
     fun openWork(id: String) {
         if (mutable.value.connecting) return
-        mutable.value = mutable.value.copy(viewedWorkId = id, viewedArtifactId = null)
+        mutable.value = mutable.value.copy(viewedWorkId = id, viewedArtifactId = null, workOrigin = if (mutable.value.destination == Destination.Commitments) Destination.Commitments else Destination.Progress)
         navigate(Destination.WorkDetail)
         viewModelScope.launch { repository?.openWork(id) }
     }
@@ -293,10 +298,28 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (destination == Destination.Memories) searchMemories("", "")
         if (destination == Destination.Progress) openWorks()
         else if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) repository?.clearWorks(close = true)
+        if (destination == Destination.Commitments) openCommitments() else repository?.clearCommitments(close = true)
         if (destination == Destination.Growth) openGrowth() else repository?.clearGrowth(close = true)
         if (destination == Destination.Persona) mutable.value.bot.selected?.let { id -> load { val value = repository?.persona(id); mutable.value = mutable.value.copy(persona = value, personaDraft = value) } }
     }
     fun inspectMemory(id: String) { viewModelScope.launch { repository?.inspectMemory(id) } }
+    private fun openCommitments() {
+        if (repository?.state?.value?.commitments?.active != true) repository?.beginCommitments()
+        viewModelScope.launch { repository?.loadCommitments() }
+    }
+    fun reloadCommitments() { viewModelScope.launch { repository?.loadCommitments() } }
+    fun commitmentDraft(id: String, text: String) {
+        saveDrafts(mutable.value.copy(commitmentDrafts = mutable.value.commitmentDrafts + (id to text)))
+    }
+    fun submitCommitment(item: Commitment, action: String) {
+        if (mutable.value.connecting || mutation?.isActive == true) return
+        val text = mutable.value.commitmentDrafts[item.id] ?: item.goal
+        mutation = viewModelScope.launch {
+            if (repository?.submitCommitment(item, action, text) == true && commitmentNeedsText(action) && mutable.value.commitmentDrafts[item.id] == text)
+                mutable.value = mutable.value.copy(commitmentDrafts = mutable.value.commitmentDrafts - item.id)
+            repository?.loadCommitments()
+        }
+    }
     private fun openGrowth() {
         if (repository?.state?.value?.growth?.active != true) repository?.beginGrowth()
         viewModelScope.launch { repository?.loadGrowth() }
@@ -358,7 +381,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     private fun saveDrafts(next: ScreenState): Boolean {
         return try {
             store.update { it.copy(drafts = next.drafts.filterValues { it.isNotEmpty() },
-                workDrafts = next.workDrafts.filterValues { it.isNotEmpty() }, attachmentDrafts = next.attachmentDrafts.filterValues { it.isNotEmpty() }) }
+                commitmentDrafts = next.commitmentDrafts, workDrafts = next.workDrafts.filterValues { it.isNotEmpty() }, attachmentDrafts = next.attachmentDrafts.filterValues { it.isNotEmpty() }) }
             mutable.value = next
             true
         } catch (_: Exception) {

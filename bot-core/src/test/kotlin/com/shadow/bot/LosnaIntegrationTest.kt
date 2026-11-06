@@ -119,6 +119,32 @@ class LosnaIntegrationTest {
             if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
         }
     }
+    @Test fun commitmentsManageOriginalWorkAndWithdrawAfterForgetThroughHttp() = runBlocking<Unit> {
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "commitments")
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val api = HttpProductApi.fixture(process.inputStream.bufferedReader().readLine().toHttpUrl())
+            val hello = api.handshake(); assertTrue("commitmentDetails" in hello.capabilities)
+            val page = api.commitments("losna"); var item = page.items.single()
+            assertEquals("fixture-work", item.workId); assertTrue("commitment.complete" in item.allowedActions)
+            assertTrue(api.commitments("losna", page.revision).unchanged)
+            val pause = PendingCommand(UUID.randomUUID().toString(), "losna", "", 1, action = "commitment.pause", commitmentId = item.id, expectedVersion = item.version)
+            val receipt = api.send(pause, hello.generation); assertEquals(receipt, api.send(pause, hello.generation))
+            item = api.commitments("losna").items.single(); assertEquals("paused", item.state)
+            val resume = PendingCommand(UUID.randomUUID().toString(), "losna", "新的完整阅读目标", 2, action = "commitment.resume", commitmentId = item.id, expectedVersion = item.version)
+            api.send(resume, hello.generation); item = api.commitments("losna").items.single()
+            assertEquals("active", item.state); assertEquals(resume.text, item.goal); assertEquals("fixture-work", item.workId)
+            api.send(PendingCommand(UUID.randomUUID().toString(), "losna", "", 3, action = "commitment.complete", commitmentId = item.id, expectedVersion = item.version), hello.generation)
+            assertEquals("completed", api.commitments("losna").items.single().state)
+            val memory = api.memories().single()
+            api.send(PendingCommand(UUID.randomUUID().toString(), "losna", "", 4, action = "memory.forget", memoryId = memory.id, expectedVersion = memory.version), hello.generation)
+            assertTrue(api.commitments("losna").items.isEmpty())
+        } finally {
+            process.outputStream.close()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
+        }
+    }
+
     @Test fun growthUsesRealPersonaAndEvidenceAuthoritiesThroughHttp() = runBlocking<Unit> {
         val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "growth")
             .redirectError(ProcessBuilder.Redirect.INHERIT).start()
