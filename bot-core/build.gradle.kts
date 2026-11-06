@@ -8,6 +8,7 @@ dependencies {
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 tasks.test {
+    providers.gradleProperty("lifeRepo").orNull?.let { systemProperty("lifeRepo", it) }
     val losnaRepo = providers.gradleProperty("losnaRepo")
     if (losnaRepo.isPresent) {
         systemProperty("losnaRepo", losnaRepo.get())

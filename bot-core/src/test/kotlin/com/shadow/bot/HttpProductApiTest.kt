@@ -44,4 +44,31 @@ class HttpProductApiTest {
             catch (error: ApiFailure) { assertEquals(401, error.status); assertFalse(error.message!!.contains("private response")) }
         }
     }
+    @Test fun attachmentUploadAndDownloadValidateBytesAndSendOnlyReferences() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val bytes = "original document".toByteArray()
+            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val value = Attachment("upload-001", "文档.pdf", "application/pdf", bytes.size.toLong(), sha, "assetv_document")
+            val json = attachmentJson(value).toString()
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(json))
+            val api = HttpProductApi.fixture(server.url("/dsh/"))
+            assertEquals(value, api.uploadAttachment(value.id, "doll", value.name, value.mediaType, bytes))
+            val upload = server.takeRequest()
+            assertEquals("1", upload.getHeader("X-Losna-Request"))
+            assertEquals("application/pdf", upload.getHeader("Content-Type"))
+            assertEquals("doll", upload.requestUrl!!.queryParameter("entryId"))
+            assertArrayEquals(bytes, upload.body.readByteArray())
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
+            assertArrayEquals(bytes, api.attachmentContent(value, "doll")); server.takeRequest()
+            server.enqueue(MockResponse().setBody("corrupt"))
+            try { api.attachmentContent(value, "doll"); fail("must reject corrupted content") } catch (_: IllegalArgumentException) { }
+            server.takeRequest()
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"accepted":true,"sourceId":"source"}"""))
+            api.send(PendingCommand("message-file", "doll", "", 1, attachments = listOf(value)), "host")
+            val command = org.json.JSONObject(server.takeRequest().body.readUtf8())
+            assertEquals(value.id, command.getJSONArray("attachmentIds").getString(0))
+            assertFalse(command.has("attachments")); assertFalse(command.toString().contains("assetv_document"))
+        }
+    }
+
 }

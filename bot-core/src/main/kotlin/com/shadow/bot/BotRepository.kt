@@ -83,14 +83,24 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         store.write(store.read().copy(pending = pending)) // disk commit precedes network and UI acknowledgement
         mutable.value = mutable.value.copy(pending = pending)
     }
-    suspend fun send(text: String): Boolean {
+    suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment {
+        require("attachments" in mutable.value.capabilities && mutable.value.roles.any { it.id == entryId }) { "当前服务尚未启用附件上传。" }
+        try { return api.uploadAttachment(id, entryId, name, mediaType, bytes) }
+        catch (error: ApiFailure) {
+            if (error.status == 401) mutable.value = mutable.value.copy(needsLogin = true, error = error.message)
+            throw error
+        }
+    }
+    suspend fun attachmentContent(attachment: Attachment, entryId: String) = api.attachmentContent(attachment, entryId)
+    suspend fun send(text: String, attachments: List<Attachment> = emptyList()): Boolean {
         var queued = false
         val entryId = mutable.value.selected
         operation {
             requireNotNull(entryId)
-            require(text.isNotBlank() && text.length <= 4000) { "请输入 1–4000 字的消息。" }
+            require((text.isNotBlank() || attachments.isNotEmpty()) && text.length <= 4000) { "请输入消息或选择附件，文字最多 4000 字。" }
+            require(attachments.isEmpty() || "attachments" in mutable.value.capabilities) { "当前服务尚未启用附件消息。" }
             require(mutable.value.pending.size < 20) { "请先处理已有待发送消息。" }
-            val message = PendingCommand(UUID.randomUUID().toString(), entryId, text.trim(), System.currentTimeMillis())
+            val message = PendingCommand(UUID.randomUUID().toString(), entryId, text.trim(), System.currentTimeMillis(), attachments = attachments)
             persist(mutable.value.pending + message)
             queued = true
             transmit(message)

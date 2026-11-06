@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
+    suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment = throw ApiFailure(503, "附件上传暂不可用。")
+    suspend fun attachmentContent(attachment: Attachment, entryId: String): ByteArray = throw ApiFailure(503, "附件暂不可用。")
     suspend fun createRole(id: String, name: String): String
     suspend fun inbox(): Inbox
     suspend fun work(id: String, entryId: String): WorkDetail
@@ -76,7 +78,8 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
     override suspend fun snapshot(entryId: String): Snapshot {
         val row = request("snapshot?entryId=${encode(entryId)}")
         return Snapshot(row.getString("generation"), row.getJSONObject("conversation").getString("id"),
-            row.getJSONArray("messages").objects().map { Message(it.getString("id"), it.getString("role"), it.string("text"), it.optLong("at"), it.string("personaName"), it.string("state")) },
+            row.getJSONArray("messages").objects().map { Message(it.getString("id"), it.getString("role"), it.string("text"), it.optLong("at"), it.string("personaName"), it.string("state"),
+                (it.optJSONArray("attachments") ?: JSONArray()).objects().map(::parseAttachment)) },
             (row.optJSONArray("entryWorks") ?: row.getJSONArray("works")).objects().map(::parseWork), row.getLong("cursor"))
     }
     override suspend fun events(after: Long): Events = request("events?after=$after").let {
@@ -86,6 +89,7 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         val body = JSONObject().put("id", message.id).put("generation", generation).put("action", message.action).put("entryId", message.entryId)
         if (message.action != "work.cancel") body.put("text", message.text)
         message.workId?.let { body.put("workId", it).put("expectedVersion", message.expectedVersion) }
+        if (message.attachments.isNotEmpty()) body.put("attachmentIds", JSONArray(message.attachments.map { it.id }))
         val result = request("commands", body)
         check(result.optBoolean("accepted")) { "消息尚未被接收。" }
         return result.getString("sourceId")
@@ -119,6 +123,27 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
     private fun parsePersona(row: JSONObject) = PersonaSettings(row.getString("entryId"), row.getInt("revision"), row.getString("active"), row.getBoolean("contactEnabled"),
         row.getJSONArray("cards").objects().map { PersonaCard(it.getString("id"), it.getString("name"), it.optString("displayName", row.string("baseName")), it.getString("instructions"), it.optBoolean("inheritIdentity", true)) })
     fun session() = Session(base.toString(), synchronized(jar.values) { jar.values.map(Cookie::toString) })
+    override suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment = withContext(Dispatchers.IO) {
+        require(bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024) { "单个附件不能超过 20 MiB。" }
+        val url = endpoint("attachments").newBuilder().addQueryParameter("id", id).addQueryParameter("entryId", entryId).addQueryParameter("name", name).build()
+        val request = Request.Builder().url(url).header("X-Losna-Request", "1").post(bytes.toRequestBody(mediaType.toMediaType())).build()
+        client.newBuilder().callTimeout(120, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build().newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw ApiFailure(response.code, if (response.code == 401) "登录已过期，请重新连接后重试附件。" else "附件上传未完成（${response.code}），请重试。")
+            val receipt = parseAttachment(JSONObject(response.body!!.string()))
+            require(receipt.id == id && receipt.name == name && receipt.bytes == bytes.size.toLong() && receipt.sha256 == sha256(bytes)) { "附件回执不匹配，请重试原附件。" }
+            receipt
+        }
+    }
+    override suspend fun attachmentContent(attachment: Attachment, entryId: String): ByteArray = withContext(Dispatchers.IO) {
+        require(attachment.bytes in 1..20L * 1024 * 1024)
+        val request = Request.Builder().url(endpoint("attachments/${encode(attachment.id)}?entryId=${encode(entryId)}")).build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw ApiFailure(response.code, "附件暂不可用，请返回聊天刷新。")
+            val bytes = response.body!!.byteStream().use(::readAttachmentBytes)
+            require(bytes.size.toLong() == attachment.bytes && sha256(bytes) == attachment.sha256) { "附件内容不完整，请重试。" }
+            bytes
+        }
+    }
     suspend fun login(token: String) = withContext(Dispatchers.IO) {
         require(token.isNotBlank()) { "请输入当前 DSH 启动口令。" }
         val url = base.newBuilder().addQueryParameter("token", token.trim()).build()
@@ -137,5 +162,6 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         // Only synthetic loopback test fixtures bypass the production HTTPS requirement.
         internal fun fixture(base: HttpUrl) = HttpProductApi(base, emptyList())
         private fun encode(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
+        private fun sha256(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     }
 }

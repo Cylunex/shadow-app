@@ -1,18 +1,36 @@
 // Synthetic local integration fixture. Never loads deployment configuration or credentials.
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, mkdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const repo = resolve(process.argv[2]);
 const moduleAt = path => import(pathToFileURL(join(repo, path)).href);
-const [{ Store }, { Memory }, { Runtime }, { loadConfig }, { handleProduct }] = await Promise.all([
-  moduleAt('src/store.js'), moduleAt('src/memory.js'), moduleAt('src/runtime.js'), moduleAt('src/config.js'), moduleAt('src/product-http.js'),
+const [{ Store }, { Memory }, { Runtime }, { loadConfig }, { handleProduct }, { Media }, { LifeClient }] = await Promise.all([
+  moduleAt('src/store.js'), moduleAt('src/memory.js'), moduleAt('src/runtime.js'), moduleAt('src/config.js'), moduleAt('src/product-http.js'), moduleAt('src/media.js'), moduleAt('src/life-client.js'),
 ]);
-const root = await mkdtemp(join(tmpdir(), 'shadow-app-contract-'));
+const root = await realpath(await mkdtemp(join(tmpdir(), 'shadow-app-contract-')));
 await writeFile(join(root, 'config.json'), JSON.stringify({ version: 1, stateDirectory: root, batchMs: 100,
   qq: { mode: 'disabled' }, general: { enabled: true }, memory: { autoLearn: false } }));
 const config = loadConfig(join(root, 'config.json'), {});
+let lifeServer, life;
+if (process.argv[3]) {
+  lifeServer = createServer(async (req, res) => {
+    if (req.headers.authorization !== 'Bearer synthetic-fixture') { res.writeHead(403); res.end(); return; }
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/capabilities?include_schemas=true') { res.end(JSON.stringify({ capabilities: [] })); return; }
+    if (req.method !== 'POST' || req.url !== '/api/assets') { res.writeHead(404); res.end(); return; }
+    const chunks = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const bytes = Buffer.concat(chunks), sha256 = createHash('sha256').update(bytes).digest('hex');
+    res.end(JSON.stringify({ protocol: 'shadow.asset', asset_id: `asset_${sha256.slice(0,24)}`, asset_version_id: `assetv_${sha256.slice(0,24)}`, sha256, bytes: bytes.length, media_type: req.headers['content-type'] }));
+  });
+  await new Promise(resolve => lifeServer.listen(0, '127.0.0.1', resolve));
+  const file = join(root, 'life.json');
+  await writeFile(file, JSON.stringify({ api: `http://127.0.0.1:${lifeServer.address().port}`, token: 'synthetic-fixture', mediaRoots: [join(root, 'media')] }));
+  config.life = { command: join(resolve(process.argv[3]), 'skills/life-operator/scripts/life'), args: ['--config', file] };
+  life = new LifeClient(config.life);
+}
 const store = new Store(join(root, 'state.sqlite'));
 const runtime = new Runtime({ store, memory: new Memory(store), config,
   driver: { availableTools: () => [], run: async (context, tools, _prompt, options) => {
@@ -22,7 +40,8 @@ const runtime = new Runtime({ store, memory: new Memory(store), config,
     await tools.find(tool => tool.name === 'companion_finish').execute({ state: 'completed', summary: 'synthetic work finished', artifacts: ['report.txt'] });
     return { state: 'completed', pendingJobs: [], steps: 1 };
   } },
-  broker: { life: { connect: async () => [] } }, qq: { close: async () => {} },
+  media: life ? new Media(join(root, 'media'), { saveImage: async () => ({ id: 'synthetic-model-image' }) }, []) : undefined,
+  broker: { life: life ?? { connect: async () => [] }, close: async () => life?.close() }, qq: { close: async () => {} },
 });
 store.put('sources', { id: 'fixture-evidence', person: 'owner', text: 'synthetic work request', state: 'processed' });
 store.put('work', { id: 'fixture-work', person: 'owner', entryId: 'losna', domain: 'general', workspace: 'scratch',
@@ -39,7 +58,7 @@ server.listen(0, '127.0.0.1', () => process.stdout.write(`http://127.0.0.1:${ser
 let closing = false;
 async function close() {
   if (closing) return; closing = true;
-  server.close(); await runtime.close(); store.close(); await rm(root, { recursive: true, force: true });
+  server.close(); lifeServer?.close(); await runtime.close(); store.close(); await rm(root, { recursive: true, force: true });
   process.exit(0);
 }
 process.on('SIGTERM', close);

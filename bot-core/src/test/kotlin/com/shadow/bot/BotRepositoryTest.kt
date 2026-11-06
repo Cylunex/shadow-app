@@ -32,7 +32,7 @@ class BotRepositoryTest {
         override suspend fun createRole(id: String, name: String) = id
         override suspend fun handshake(): Handshake {
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText"))
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments"))
         }
         override suspend fun snapshot(entryId: String): Snapshot {
             reads++
@@ -45,7 +45,7 @@ class BotRepositoryTest {
                 if (message.action != "message" && message.expectedVersion != detail.work.version) throw ApiFailure(409, "stale version")
                 if (message.action == "work.cancel") detail = detail.copy(work = detail.work.copy(state = "cancelled", version = detail.work.version + 1), allowedActions = emptySet())
                 commands[message.id] = message
-                rows.add(Message(message.id, "user", message.text, 1)); cursor++
+                rows.add(Message(message.id, "user", message.text, 1, attachments = message.attachments)); cursor++
             } else check(commands[message.id] == message)
             if (loseResponse) { loseResponse = false; throw IOException("response lost after accept") }
             return message.id
@@ -144,6 +144,25 @@ class BotRepositoryTest {
         assertNull(SharedText.read("android.intent.action.SEND", "image/png", "ignore"))
         assertThrows(IllegalArgumentException::class.java) { SharedText.read("android.intent.action.SEND", "text/plain", "x".repeat(4001)) }
         assertThrows(IllegalArgumentException::class.java) { SharedText.append("x".repeat(4000), "more") }
+    }
+
+    @Test fun attachmentOnlyMessageKeepsReferencesAcrossLostReceiptAndRestart() = runBlocking<Unit> {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store)
+        val attachment = Attachment("upload-original", "原件.pdf", "application/pdf", 12, "a".repeat(64), "assetv_original")
+        repo.refresh(); repo.select("losna"); api.loseResponse = true
+        assertTrue(repo.send("", listOf(attachment)))
+        val original = store.saved.pending.single()
+        store.saved = StateCodec.decode(StateCodec.encode(store.saved))
+        assertEquals(listOf(attachment), store.saved.pending.single().attachments)
+        val restored = BotRepository(api, store)
+        restored.refresh(); restored.select("losna"); restored.retry(original.id)
+        assertTrue(store.saved.pending.isEmpty()); assertEquals(1, api.commands.size)
+        assertEquals(listOf(attachment), restored.state.value.messages.single().attachments)
+    }
+    @Test fun attachmentReaderBoundsUnknownLengthAndRejectsEmptyFiles() {
+        assertThrows(IllegalArgumentException::class.java) { readAttachmentBytes(byteArrayOf().inputStream()) }
+        assertThrows(IllegalArgumentException::class.java) { readAttachmentBytes(ByteArray(20 * 1024 * 1024 + 1).inputStream()) }
+        assertArrayEquals("original".toByteArray(), readAttachmentBytes("original".byteInputStream()))
     }
 
 }

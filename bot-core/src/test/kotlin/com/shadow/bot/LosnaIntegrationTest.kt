@@ -61,4 +61,34 @@ class LosnaIntegrationTest {
             if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
         }
     }
+    @Test fun attachmentsTravelThroughLifeSkillAndActualProductHttp() = runBlocking<Unit> {
+        val lifeRepo = System.getProperty("lifeRepo")
+        org.junit.Assume.assumeNotNull(lifeRepo)
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), lifeRepo)
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val address = process.inputStream.bufferedReader().readLine()
+            assertNotNull(address)
+            val api = HttpProductApi.fixture(address.toHttpUrl())
+            val hello = api.handshake(); assertTrue("attachments" in hello.capabilities)
+            val document = "synthetic attachment original".toByteArray()
+            val id = UUID.randomUUID().toString()
+            val first = api.uploadAttachment(id, "losna", "原始资料.pdf", "application/pdf", document)
+            assertEquals(first, api.uploadAttachment(id, "losna", "原始资料.pdf", "application/pdf", document))
+            assertArrayEquals(document, api.attachmentContent(first, "losna"))
+            val png = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=")
+            val image = api.uploadAttachment(UUID.randomUUID().toString(), "losna", "合成图片.png", "image/png", png)
+            val command = PendingCommand(UUID.randomUUID().toString(), "losna", "", 1, attachments = listOf(first, image))
+            val receipt = api.send(command, hello.generation)
+            assertEquals(receipt, api.send(command, hello.generation))
+            val snapshot = api.snapshot("losna")
+            assertEquals(listOf(first, image), snapshot.messages.first { it.id == receipt }.attachments)
+            val other = api.createRole("bot-" + UUID.randomUUID(), "另一个伙伴")
+            try { api.attachmentContent(first, other); fail("must reject cross-entry content") } catch (error: ApiFailure) { assertEquals(404, error.status) }
+        } finally {
+            process.outputStream.close()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
+        }
+    }
+
 }
