@@ -85,7 +85,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     private fun attach(api: HttpProductApi, baseUrl: String) {
         val saved = store.read()
         uploads.values.forEach { it.cancel() }; uploads.clear()
-        polling?.cancel(); collector?.cancel(); repository?.clearMemories(close = true)
+        polling?.cancel(); collector?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true)
         val repo = BotRepository(api, store); repository = repo
         mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, viewedWorkId = null, viewedArtifactId = null,
             drafts = saved.drafts, workDrafts = saved.workDrafts,
@@ -184,9 +184,10 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 if (browser != null && !browser.active) repository?.beginMemories(browser.query, browser.kind)
                 viewModelScope.launch { repository?.loadMemories(silent = true) }
             }
+            if (mutable.value.destination == Destination.Progress) openWorks()
             startPolling()
         }
-        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true) }
+        else { polling?.cancel(); polling = null; detailLoad?.cancel(); repository?.clearMemories(close = true); repository?.clearWorks(close = true) }
     }
     private fun startPolling() {
         polling?.cancel()
@@ -197,6 +198,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 if (!mutable.value.bot.needsLogin) {
                     repository?.poll()
                     if (mutable.value.destination == Destination.Memories) repository?.loadMemories(silent = true)
+                    if (mutable.value.destination == Destination.Progress) repository?.loadWorks(silent = true)
                 }
             }
         }
@@ -285,9 +287,22 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         if (destination == Destination.Conversations) viewModelScope.launch { repository?.select(null) }
         repository?.clearMemories(close = true)
         if (destination == Destination.Memories) searchMemories("", "")
+        if (destination == Destination.Progress) openWorks()
+        else if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) repository?.clearWorks(close = true)
         if (destination == Destination.Persona) mutable.value.bot.selected?.let { id -> load { val value = repository?.persona(id); mutable.value = mutable.value.copy(persona = value, personaDraft = value) } }
     }
     fun inspectMemory(id: String) { viewModelScope.launch { repository?.inspectMemory(id) } }
+    private fun openWorks() {
+        val browser = repository?.state?.value?.workBrowser ?: return
+        if (!browser.active) repository?.beginWorks(browser.query, browser.status)
+        viewModelScope.launch { repository?.loadWorks(silent = browser.loaded) }
+    }
+    fun searchWorks(query: String, status: String) {
+        repository?.beginWorks(query, status)
+        viewModelScope.launch { repository?.loadWorks() }
+    }
+    fun moreWorks() { viewModelScope.launch { repository?.loadWorks(more = true) } }
+    fun reloadWorks() { viewModelScope.launch { repository?.loadWorks() } }
     fun closeMemory() { repository?.closeMemoryDetail() }
     fun searchMemories(query: String, kind: String) {
         repository?.beginMemories(query, kind)

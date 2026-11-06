@@ -21,6 +21,14 @@ class BotRepositoryTest {
     private class Api : ProductApi {
         var generation = "one"
         var memoryBrowse = true
+        var workBrowse = true
+        val workPages = java.util.ArrayDeque<WorkPage>()
+        var workError: Exception? = null
+        var beforeWorks: suspend () -> Unit = {}
+        val workRequests = mutableListOf<Pair<String?, String?>>()
+        override suspend fun workPage(entryId: String, query: String, status: String, before: String?, ifRevision: String?, limit: Int): WorkPage {
+            workRequests.add(before to ifRevision); beforeWorks(); workError?.let { throw it }; return workPages.removeFirst()
+        }
         val memoryPages = java.util.ArrayDeque<MemoryPage>()
         var memoryError: Exception? = null
         var beforeMemories: suspend () -> Unit = {}
@@ -74,7 +82,7 @@ class BotRepositoryTest {
         override suspend fun handshake(): Handshake {
             handshakeError?.let { throw it }
             if (loginExpired) throw ApiFailure(401, "expired")
-            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + if (memoryBrowse) setOf("memoryBrowse") else emptySet(), epoch)
+            return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext", "memories", "memoryActions") + (if (memoryBrowse) setOf("memoryBrowse") else emptySet()) + (if (workBrowse) setOf("workBrowse") else emptySet()), epoch)
         }
         var beforeSnapshot: () -> Unit = {}
         override suspend fun snapshot(entryId: String): Snapshot {
@@ -446,6 +454,67 @@ class BotRepositoryTest {
         api.memoryError = ApiFailure(404, "forgotten"); repo.inspectMemory("a")
         assertTrue(repo.state.value.memoryBrowser.items.isEmpty()); assertNull(repo.state.value.memoryBrowser.detail)
         assertNotNull(repo.state.value.memoryBrowser.error)
+    }
+
+    private fun workPage(ids: List<String> = listOf("a"), next: String? = "next", revision: String = "r1", query: String = "", status: String = "") =
+        WorkPage("one", 0, "losna", query, status, revision, ids.map { Work(it, "losna", "Report $it", "waiting", "result", "next", 1) }, next, 2)
+
+    @Test fun workPaginationRetainsPagesDuringConditionalRefreshAndReplacesChangedRevision() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginWorks()
+        api.workPages.add(workPage()); repo.loadWorks()
+        api.workPages.add(workPage(listOf("b"), null)); repo.loadWorks(more = true)
+        api.workPages.add(workPage(emptyList(), null).copy(unchanged = true)); repo.loadWorks(silent = true)
+        assertEquals(listOf("a", "b"), repo.state.value.workBrowser.items.map { it.id })
+        assertEquals(listOf(null to null, "next" to null, null to "r1"), api.workRequests)
+        api.workPages.add(workPage(listOf("c"), null, "r2")); repo.loadWorks(silent = true)
+        assertEquals(listOf("c"), repo.state.value.workBrowser.items.map { it.id })
+        assertEquals(2, repo.state.value.workBrowser.total)
+    }
+    @Test fun workCursorConflictRestartAndMemoryEpochWithdrawOldPages() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginWorks()
+        api.workPages.add(workPage()); repo.loadWorks()
+        api.workError = ApiFailure(409, "stale"); repo.loadWorks(more = true)
+        assertTrue(repo.state.value.workBrowser.items.isEmpty()); assertNull(repo.state.value.workBrowser.next)
+        api.workError = null; api.workPages.add(workPage()); repo.loadWorks()
+        api.epoch++; repo.refresh(); assertTrue(repo.state.value.workBrowser.items.isEmpty())
+        api.workPages.add(workPage().copy(epoch = 1)); repo.loadWorks()
+        api.generation = "two"; repo.refresh(); assertTrue(repo.state.value.workBrowser.items.isEmpty())
+    }
+    @Test fun lateWorkPagesCannotReviveChangedSearchClosedScreenOrChangedLogin() = runBlocking<Unit> {
+        val api = Api(); val store = Store(); val repo = BotRepository(api, store); repo.refresh(); repo.select("losna"); repo.beginWorks("Report")
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        api.beforeWorks = { started.complete(Unit); release.await() }; api.workPages.add(workPage(query = "Report"))
+        val pending = async { repo.loadWorks() }; started.await()
+        repo.beginWorks("new", "ended"); release.complete(Unit); pending.await()
+        assertEquals("new", repo.state.value.workBrowser.query); assertTrue(repo.state.value.workBrowser.items.isEmpty())
+        api.beforeWorks = { repo.clearWorks(close = true) }; api.workPages.add(workPage(query = "new", status = "ended")); repo.loadWorks()
+        assertFalse(repo.state.value.workBrowser.active); assertFalse(repo.state.value.workBrowser.loading)
+        repo.beginWorks(); api.beforeWorks = { store.saved = store.saved.copy(session = Session("https://other.example.com/", emptyList())) }
+        api.workPages.add(workPage()); repo.loadWorks(); assertTrue(repo.state.value.workBrowser.items.isEmpty())
+    }
+    @Test fun workNetworkFailureRetainsLoadedContentButAuthorizationAndContactChangesClearIt() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginWorks()
+        api.workPages.add(workPage()); repo.loadWorks()
+        api.workError = IOException("offline"); repo.loadWorks(more = true)
+        assertEquals("a", repo.state.value.workBrowser.items.single().id); assertEquals("next", repo.state.value.workBrowser.next)
+        assertNotNull(repo.state.value.workBrowser.error)
+        api.workError = ApiFailure(403, "forbidden"); repo.loadWorks(silent = true)
+        assertTrue(repo.state.value.workBrowser.items.isEmpty())
+        api.workError = null; repo.refresh(); api.workPages.add(workPage()); repo.loadWorks()
+        repo.beginWorks("private search", "ended")
+        repo.select("doll"); assertTrue(repo.state.value.workBrowser.items.isEmpty()); assertFalse(repo.state.value.workBrowser.active)
+        assertEquals("", repo.state.value.workBrowser.query); assertEquals("", repo.state.value.workBrowser.status)
+    }
+    @Test fun workCapabilityLossAndPageLimitDoNotIssueUnsupportedRequests() = runBlocking<Unit> {
+        val api = Api(); val repo = BotRepository(api, Store()); repo.refresh(); repo.select("losna"); repo.beginWorks()
+        repeat(12) { page ->
+            api.workPages.add(workPage((1..50).map { (page * 50 + it).toString() }))
+            repo.loadWorks(more = page > 0)
+        }
+        assertEquals(600, repo.state.value.workBrowser.items.size)
+        repo.loadWorks(more = true); assertEquals(12, api.workRequests.size)
+        api.workBrowse = false; repo.refresh(); repo.loadWorks(); assertEquals(12, api.workRequests.size)
+        assertTrue(repo.state.value.workBrowser.items.isEmpty())
     }
 
 }

@@ -92,6 +92,51 @@ class BotScreenTest {
         compose.onNodeWithText("刚到的新消息").assertIsDisplayed()
     }
 
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun workSearchAndPaginationAreReachableOnNarrowScreen() {
+        val vm = model()
+        val work = Work("old", "assistant", "去年的阅读计划", "completed", "已整理", "", match = "…合成资料里的阅读顺序与依据")
+        val state = ScreenState(destination = Destination.Progress, bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "workBrowse",
+            workBrowser = WorkBrowserState(active = true, query = "合成资料", status = "ended", items = listOf(work), next = "next", revision = "r1", total = 127, loaded = true)))
+        compose.setContent { BotTheme { BotScreen(state, vm) } }
+        compose.onNodeWithText("搜索全部事项").assertIsDisplayed()
+        compose.onNodeWithText("搜索", substring = false).assertIsDisplayed()
+        compose.onNodeWithText("清除").assertIsDisplayed()
+        compose.onNodeWithText("已结束", substring = false).assertIsDisplayed()
+        compose.onNodeWithText(work.match).assertIsDisplayed()
+        screenshot("works-search-320")
+        compose.onNodeWithText("加载更多事项").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("已显示 1 / 127 项").assertIsDisplayed()
+    }
+    @Test fun workListReturnsToSamePositionAndRevisionChangeRemovesStaleRows() {
+        val vm = model()
+        val works = (1..40).map { Work("w$it", "assistant", "资料整理 $it", "completed", "已完成资料整理", "") }
+        val browser = WorkBrowserState(active = true, items = works, revision = "r1", total = 40, loaded = true)
+        val state = mutableStateOf(ScreenState(destination = Destination.Progress,
+            bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "workBrowse", workBrowser = browser)))
+        compose.setContent { BotTheme { BotScreen(state.value, vm) } }
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(20)
+        compose.onNodeWithText("资料整理 21").assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(destination = Destination.WorkDetail) }
+        compose.runOnIdle { state.value = state.value.copy(destination = Destination.Progress) }
+        compose.onNodeWithText("资料整理 21").assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(bot = state.value.bot.copy(workBrowser = browser.copy(items = works.take(2), revision = "r2", total = 2))) }
+        compose.onNodeWithText("资料整理 1").assertIsDisplayed()
+        compose.onNodeWithText("资料整理 21").assertDoesNotExist()
+    }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun workFiltersAndEmptyStateFitLargeType() {
+        val vm = model()
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(1f, 2f)) {
+                BotTheme { BotScreen(ScreenState(destination = Destination.Progress, bot = bot.copy(selected = "assistant", capabilities = bot.capabilities + "workBrowse",
+                    workBrowser = WorkBrowserState(active = true, query = "不存在", loaded = true))), vm) }
+            }
+        }
+        compose.onNodeWithText("搜索全部事项").assertIsDisplayed()
+        compose.onNodeWithText("清除").assertIsDisplayed()
+        compose.onNodeWithText("没有找到相关事项，试试其他关键词或状态。").assertIsDisplayed()
+        screenshot("works-large-type-320")
+    }
+
     @Test fun workFiltersAndResultsRemainReadable() {
         val vm = model()
         val running = Work("w1", "assistant", "整理一份周末阅读计划", "running", "已选出两篇适合周末阅读的文章。", "正在补充阅读顺序", version = 1)

@@ -46,6 +46,11 @@ const runtime = new Runtime({ store, memory: new Memory(store), config,
 store.put('sources', { id: 'fixture-evidence', person: 'owner', text: 'synthetic work request', state: 'processed' });
 store.put('work', { id: 'fixture-work', person: 'owner', entryId: 'losna', domain: 'general', workspace: 'scratch',
   goal: 'synthetic report', state: 'waiting', paused: true, sourceIds: ['fixture-evidence'], plan: [{ content: 'write report', status: 'pending' }] });
+if (process.argv[4] === 'works') {
+  runtime.memory.save('owner', { text: 'synthetic work evidence' }, ['fixture-evidence']);
+  for (let n = 0; n < 123; n++) store.put('work', { id: `synthetic-work-${n}`, person: 'owner', entryId: 'losna',
+    goal: `合成资料 ${n}`, result: '完整报告 100% _ +', state: 'completed', sourceIds: ['fixture-evidence'] });
+}
 if (process.argv[4] === 'memories') {
   for (let n = 0; n < 123; n++) {
     const id = `memory-source-${n}`;

@@ -96,6 +96,18 @@ class HttpProductApiTest {
         }
     }
 
+    @Test fun workPagePreservesLiteralSearchCursorAndProxyPrefix() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"generation":"host","entryId":"doll","epoch":7,"query":"报告 + 100% _","status":"ended","revision":"r1","items":[{"id":"old","entryId":"doll","goal":"old report","state":"completed","match":"报告 + 100% _","version":4}],"next":null,"total":1}"""))
+            val page = HttpProductApi.fixture(server.url("/dsh/")).workPage("doll", query = "报告 + 100% _", status = "ended", before = "opaque+/=", limit = 17)
+            val url = server.takeRequest().requestUrl!!
+            assertEquals("/dsh/losna/agent/api/work-page", url.encodedPath)
+            assertEquals("报告 + 100% _", url.queryParameter("query")); assertEquals("ended", url.queryParameter("status"))
+            assertEquals("opaque+/=", url.queryParameter("before")); assertEquals("17", url.queryParameter("limit"))
+            assertEquals(1, page.total); assertEquals(4L, page.items.single().version); assertEquals(page.query, page.items.single().match)
+        }
+    }
+
     @Test fun nativeBearerAppliesToJsonAndFilesWithoutRedirectOrWriteReplay() = runBlocking<Unit> {
         MockWebServer().use { server ->
             var calls = 0

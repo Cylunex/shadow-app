@@ -10,6 +10,8 @@
 - `app` 使用系统 `org.json`；纯 JVM `bot-core` 测试使用固定版本依赖，避免把重复的平台 JSON 类打入应用。
 - 保留应用 ID `com.shadow.app`、提升源码 versionCode。0.7.0（15）已在仓库外使用原发布签名签署并完成真机首次安装，签名与上一包一致；私钥、签名参数和 APK 由工作区 operations 管理，未写入源码。0.12.0 已验证覆盖升级、原登录保留和进程重启后的会话恢复。
 
+2026-11-06 后续源码 0.13.0（23）增加[事项检索](bot-work-browser.md)，未部署或构建安装包。
+
 ## 已接入的 Product v1
 
 设 DSH 根地址为 `https://example.com/dsh/`。统一 OIDC 登录和兼容口令连接并存，详情见[统一登录](bot-unified-login.md)。兼容登录请求为根地址加 `token` 参数，接收既有 DSH 签名 Cookie；不跟随跳转，不调用新账户接口。接口前缀为该根地址下 `losna/agent/api/`。
@@ -27,6 +29,7 @@
 | GET memory/{id} | 有效记忆、当前版本和来源片段 |
 | POST contact | 联系人归档／恢复与版本检查 |
 | GET inbox | 各伙伴最近可见消息与在办事项数量 |
+| GET work-page?entryId=…&query=…&status=…&before=… | 当前伙伴全部有效事项检索／状态筛选／分页，支持 ifRevision 条件读取；旧 GET works 保留原语义 |
 | GET work-detail/{id}?entryId=… | 事项计划、结果、执行记录、成果与当前允许操作 |
 | GET artifact-text/{id}?entryId=… | 原成果快照的只读文本预览 |
 | GET events?after=… | 失效通知与游标；有变化后回读快照 |

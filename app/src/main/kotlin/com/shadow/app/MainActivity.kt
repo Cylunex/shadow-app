@@ -94,6 +94,8 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun BotScreen(state: ScreenState, vm: BotViewModel) {
     val searchListState = rememberLazyListState()
+    val workListState = rememberLazyListState()
+    LaunchedEffect(state.bot.selected, state.bot.workBrowser.query, state.bot.workBrowser.status, state.bot.workBrowser.revision) { workListState.scrollToItem(0) }
     LaunchedEffect(state.bot.selected, state.bot.searchQuery) { searchListState.scrollToItem(0) }
     val role = state.bot.roles.find { it.id == state.bot.selected }
     val back = {
@@ -167,7 +169,7 @@ class MainActivity : ComponentActivity() {
                 Destination.Chat -> key(state.bot.selected) { Chat(state, vm) }
                 Destination.Settings -> Settings(state, vm)
                 Destination.CreateRole -> CreateRole(state, vm)
-                Destination.Progress -> Progress(state.bot, vm)
+                Destination.Progress -> Progress(state.bot, vm, workListState)
                 Destination.WorkDetail -> WorkDetailScreen(state, vm)
                 Destination.ArtifactPreview -> ArtifactScreen(state)
                 Destination.Search -> MessageSearchScreen(state, vm, searchListState)

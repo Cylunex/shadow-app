@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
+    suspend fun workPage(entryId: String, query: String = "", status: String = "", before: String? = null, ifRevision: String? = null, limit: Int = 50): WorkPage =
+        throw ApiFailure(503, "当前服务尚未开放事项检索。")
     suspend fun messageContext(entryId: String, anchor: MessageRef, epoch: Long, before: String? = null, after: String? = null, limit: Int = 30): MessageContextPage = throw ApiFailure(503, "当前服务尚未开放消息定位。")
     suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment = throw ApiFailure(503, "附件上传暂不可用。")
     suspend fun attachmentContent(attachment: Attachment, entryId: String): ByteArray = throw ApiFailure(503, "附件暂不可用。")
@@ -156,7 +158,13 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         })
     }
     private fun parseWork(row: JSONObject) = Work(row.getString("id"), row.optString("entryId", "losna"), row.string("goal"), row.string("state"),
-        row.string("result"), row.string("nextStep"), row.optLong("version"), row.optBoolean("paused"))
+        row.string("result"), row.string("nextStep"), row.optLong("version"), row.optBoolean("paused"), row.string("match"))
+    override suspend fun workPage(entryId: String, query: String, status: String, before: String?, ifRevision: String?, limit: Int): WorkPage {
+        val row = request("work-page?entryId=${encode(entryId)}&query=${encode(query)}&status=${encode(status)}&limit=$limit" +
+            (before?.let { "&before=${encode(it)}" } ?: "") + (ifRevision?.let { "&ifRevision=${encode(it)}" } ?: ""))
+        return WorkPage(row.getString("generation"), row.getLong("epoch"), row.getString("entryId"), row.getString("query"), row.getString("status"),
+            row.getString("revision"), row.getJSONArray("items").objects().map(::parseWork), row.string("next").takeIf(String::isNotEmpty), row.getInt("total"), row.optBoolean("unchanged"))
+    }
     override suspend fun work(id: String, entryId: String): WorkDetail = request("work-detail/${encode(id)}?entryId=${encode(entryId)}").let { row ->
         val actions = row.getJSONArray("allowedActions")
         WorkDetail(parseWork(row), row.getJSONArray("plan").objects().map { PlanStep(it.string("content"), it.string("status")) },

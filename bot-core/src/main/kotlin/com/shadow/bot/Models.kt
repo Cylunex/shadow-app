@@ -14,7 +14,12 @@ data class Attachment(val id: String, val name: String, val mediaType: String, v
     }
 }
 data class Message(val id: String, val role: String, val text: String, val at: Long, val personaName: String = "", val state: String = "", val attachments: List<Attachment> = emptyList())
-data class Work(val id: String, val entryId: String, val goal: String, val state: String, val result: String, val nextStep: String, val version: Long = 0, val paused: Boolean = false)
+data class Work(val id: String, val entryId: String, val goal: String, val state: String, val result: String, val nextStep: String, val version: Long = 0, val paused: Boolean = false, val match: String = "")
+data class WorkPage(val generation: String, val epoch: Long, val entryId: String, val query: String, val status: String,
+    val revision: String, val items: List<Work>, val next: String?, val total: Int, val unchanged: Boolean = false)
+data class WorkBrowserState(val active: Boolean = false, val query: String = "", val status: String = "",
+    val items: List<Work> = emptyList(), val next: String? = null, val revision: String? = null, val total: Int = 0,
+    val loading: Boolean = false, val loaded: Boolean = false, val error: String? = null)
 data class MemoryItem(val id: String, val text: String, val kind: String, val version: Long = 0)
 data class MemorySource(val id: String, val text: String, val at: String, val truncated: Boolean)
 data class MemoryDetail(val item: MemoryItem, val sources: List<MemorySource>)

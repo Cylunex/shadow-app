@@ -6,6 +6,10 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -18,24 +22,45 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.shadow.bot.BotState
 
-@Composable internal fun Progress(bot: BotState, vm: BotViewModel) {
+@Composable internal fun Progress(bot: BotState, vm: BotViewModel, listState: LazyListState = rememberLazyListState()) {
     var filter by rememberSaveable { mutableIntStateOf(0) }
+    val browser = bot.workBrowser
+    val browsing = "workBrowse" in bot.capabilities
+    var query by remember(browser.query) { mutableStateOf(browser.query) }
+    val keyboard = LocalSoftwareKeyboardController.current
     val ongoing = bot.works.count { it.isOngoing() }
-    val works = bot.works.filter { when (filter) { 1 -> it.isOngoing(); 2 -> !it.isOngoing(); else -> true } }
+    val works = if (browsing) browser.items else bot.works.filter { when (filter) { 1 -> it.isOngoing(); 2 -> !it.isOngoing(); else -> true } }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("全部 ${bot.works.size}", "进行中 $ongoing", "已结束 ${bot.works.size - ongoing}").forEachIndexed { index, label ->
-                FilterChip(filter == index, { filter = index }, label = { Text(label) })
+        if (browsing) Column(Modifier.padding(horizontal = 20.dp)) {
+            OutlinedTextField(query, { query = it.take(200) }, label = { Text("搜索全部事项") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); vm.searchWorks(query, browser.status) }), modifier = Modifier.fillMaxWidth())
+            Row {
+                TextButton(onClick = { keyboard?.hide(); vm.searchWorks(query, browser.status) }, enabled = !browser.loading) { Text("搜索") }
+                if (browser.query.isNotEmpty() || browser.status.isNotEmpty()) TextButton(onClick = { query = ""; vm.searchWorks("", "") }) { Text("清除") }
             }
         }
-        LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (works.isEmpty()) item {
-                Text(if (bot.works.isEmpty()) "还没有事项，在聊天里交代就好。" else "这里暂时没有事项。",
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val labels = if (browsing) listOf("全部", "进行中", "已结束") else listOf("全部 ${bot.works.size}", "进行中 $ongoing", "已结束 ${bot.works.size - ongoing}")
+            labels.forEachIndexed { index, label ->
+                val status = listOf("", "ongoing", "ended")[index]
+                FilterChip(if (browsing) browser.status == status else filter == index,
+                    { if (browsing) { keyboard?.hide(); vm.searchWorks(query, status) } else filter = index }, label = { Text(label) })
+            }
+        }
+        LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (browsing && browser.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            if (browsing) browser.error?.let { error -> item { Text(error, color = MaterialTheme.colorScheme.error); TextButton(onClick = vm::reloadWorks, enabled = !browser.loading) { Text("重新读取") } } }
+            if (works.isEmpty() && (!browsing || browser.loaded) && browser.error == null) item {
+                Text(if (browsing && (browser.query.isNotEmpty() || browser.status.isNotEmpty())) "没有找到相关事项，试试其他关键词或状态。"
+                    else if (bot.works.isEmpty()) "还没有事项，在聊天里交代就好。" else "这里暂时没有事项。",
                     Modifier.padding(vertical = 32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             items(works, key = { it.id }) { work ->
@@ -49,12 +74,20 @@ import com.shadow.bot.BotState
                         }
                         Text(work.goal, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         val summary = if (work.isOngoing()) work.nextStep.ifBlank { work.result } else work.result.ifBlank { work.nextStep }
-                        if (summary.isNotBlank()) Text(summary, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        if (summary.isNotBlank() && (!browsing || browser.query.isEmpty())) Text(summary, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (browsing && work.match.isNotBlank()) SearchMessageText(work.match, browser.query)
                     }
                 }
             }
             if (works.isNotEmpty()) item { Text("手机关闭后，已接收的事项仍会继续。", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (!browsing) item { Text("当前服务仅显示最近 100 项；升级服务后可搜索更早的事项。", style = MaterialTheme.typography.labelSmall) }
+            else if (browser.loaded) item {
+                Text("已显示 ${works.size} / ${browser.total} 项", style = MaterialTheme.typography.labelSmall)
+                if (browser.next != null && works.size < 600) TextButton(onClick = vm::moreWorks, enabled = !browser.loading && browser.error == null) { Text("加载更多事项") }
+                if (browser.next != null && works.size >= 600) Text("已达本次浏览上限，请用关键词或状态缩小范围。", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = vm::reloadWorks, enabled = !browser.loading) { Text("刷新事项") }
+            }
         }
     }
 }

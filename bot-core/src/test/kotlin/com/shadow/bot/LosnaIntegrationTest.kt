@@ -87,6 +87,38 @@ class LosnaIntegrationTest {
             if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
         }
     }
+    @Test fun browsesOldWorksAndReopensOriginalTaskThroughActualHttp() = runBlocking<Unit> {
+        val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "works")
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        try {
+            val address = process.inputStream.bufferedReader().readLine()
+            val api = HttpProductApi.fixture(address.toHttpUrl())
+            val hello = api.handshake(); assertTrue("workBrowse" in hello.capabilities)
+            val legacy = org.json.JSONObject(java.net.URL(address + "losna/agent/api/works?entryId=losna").readText())
+            assertEquals(100, legacy.getJSONArray("items").length()); assertFalse(legacy.has("revision"))
+            assertEquals(100, api.snapshot("losna").works.size)
+            val first = api.workPage("losna", query = "100% _ +", status = "ended")
+            val second = api.workPage("losna", query = first.query, status = first.status, before = first.next)
+            val third = api.workPage("losna", query = first.query, status = first.status, before = second.next)
+            assertEquals(123, first.total); assertEquals(123, (first.items + second.items + third.items).map { it.id }.toSet().size)
+            assertNull(third.next); assertTrue(first.items.first().match.contains("100% _ +"))
+            assertTrue(api.workPage("losna", query = first.query, status = first.status, ifRevision = first.revision).unchanged)
+            val old = api.workPage("losna", query = "write report").items.single()
+            assertEquals("fixture-work", old.id); assertEquals("waiting", api.work(old.id, "losna").work.state)
+            try { api.workPage("losna", query = "changed", before = first.next); fail("cursor scope") }
+            catch (error: ApiFailure) { assertEquals(400, error.status) }
+            val other = api.createRole("bot-" + UUID.randomUUID(), "合成伙伴")
+            assertEquals(0, api.workPage(other).total)
+            val memory = api.memories().single()
+            api.send(PendingCommand(UUID.randomUUID().toString(), "losna", "", 1, action = "memory.forget", memoryId = memory.id, expectedVersion = memory.version), hello.generation)
+            try { api.workPage("losna", query = first.query, status = first.status, before = first.next); fail("withdrawn cursor") }
+            catch (error: ApiFailure) { assertEquals(409, error.status) }
+            assertEquals(0, api.workPage("losna").total)
+        } finally {
+            process.outputStream.close()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroy(); process.waitFor(5, TimeUnit.SECONDS) }
+        }
+    }
     @Test fun browsesAndCorrectsSharedMemoriesThroughActualProductHttp() = runBlocking<Unit> {
         val process = ProcessBuilder("node", System.getProperty("fixtureScript"), System.getProperty("losnaRepo"), "", "memories")
             .redirectError(ProcessBuilder.Redirect.INHERIT).start()
