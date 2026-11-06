@@ -13,13 +13,15 @@ sealed interface Destination {
     data object Settings : Destination
     data object CreateRole : Destination
     data object Chat : Destination
+    data object WorkDetail : Destination
+    data object ArtifactPreview : Destination
     data object Progress : Destination
     data object Memories : Destination
     data object Persona : Destination
 }
 data class ScreenState(val bot: BotState = BotState(), val destination: Destination = Destination.Conversations,
     val baseUrl: String = "", val connecting: Boolean = false, val notice: String? = null,
-    val drafts: Map<String, String> = emptyMap(),
+    val drafts: Map<String, String> = emptyMap(), val workDrafts: Map<String, String> = emptyMap(), val sharedText: String? = null, val viewedWorkId: String? = null, val viewedArtifactId: String? = null,
     val persona: PersonaSettings? = null, val memories: List<MemoryItem> = emptyList(), val storageError: Boolean = false)
 
 class BotViewModel(application: Application) : AndroidViewModel(application) {
@@ -31,6 +33,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     private var polling: Job? = null
     private var foreground = false
     private var detailLoad: Job? = null
+    private var mutation: Job? = null
     init {
         try {
             val session = store.read().session
@@ -41,13 +44,13 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     private fun attach(api: HttpProductApi, baseUrl: String) {
         polling?.cancel(); collector?.cancel()
         val repo = BotRepository(api, store); repository = repo
-        mutable.value = mutable.value.copy(baseUrl = baseUrl, destination = Destination.Conversations, persona = null, memories = emptyList(), drafts = emptyMap())
+        mutable.value = mutable.value.copy(baseUrl = baseUrl, destination = Destination.Conversations, persona = null, memories = emptyList(), drafts = emptyMap(), workDrafts = emptyMap())
         collector = viewModelScope.launch { repo.state.collect { mutable.value = mutable.value.copy(bot = it) } }
         viewModelScope.launch { repo.refresh() }
         startPolling()
     }
     fun connect(address: String, token: String) {
-        if (mutable.value.connecting || mutable.value.storageError || mutable.value.bot.busy) return
+        if (mutable.value.connecting || mutable.value.storageError || mutable.value.bot.busy || mutation?.isActive == true) return
         mutable.value = mutable.value.copy(connecting = true, notice = null)
         polling?.cancel()
         viewModelScope.launch {
@@ -57,7 +60,9 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
                 require(previous.pending.isEmpty() || previous.session?.baseUrl == base) { "请先处理原连接的待发消息，再更换服务地址。" }
                 val api = HttpProductApi.from(Session(base, emptyList()))
                 api.login(token); api.handshake()
-                store.write(previous.copy(session = api.session()))
+                val current = store.read()
+                require(current.pending.isEmpty() || current.session?.baseUrl == base) { "请先处理原连接的待发记录。" }
+                store.write(current.copy(session = api.session()))
                 attach(api, base)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { mutable.value = mutable.value.copy(notice = when(error) {
@@ -67,7 +72,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun disconnect() {
-        if (mutable.value.connecting || mutable.value.bot.busy || mutable.value.storageError) return
+        if (mutable.value.connecting || mutable.value.bot.busy || mutable.value.storageError || mutation?.isActive == true) return
         try {
             if (store.read().pending.isNotEmpty()) {
                 mutable.value = mutable.value.copy(notice = "请先处理待发记录，再断开本机连接。")
@@ -97,10 +102,54 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun refresh() { if (mutable.value.connecting) return; viewModelScope.launch { repository?.refresh() } }
-    fun open(role: BotRole) { if (mutable.value.connecting) return; navigate(Destination.Chat); viewModelScope.launch { repository?.select(role.id) } }
+    fun open(role: BotRole) {
+        if (mutable.value.connecting) return
+        val shared = mutable.value.sharedText
+        if (shared != null) {
+            try {
+                val draft = SharedText.append(mutable.value.drafts[role.id].orEmpty(), shared)
+                mutable.value = mutable.value.copy(drafts = mutable.value.drafts + (role.id to draft), sharedText = null)
+            } catch (error: IllegalArgumentException) { mutable.value = mutable.value.copy(notice = error.message); return }
+        }
+        navigate(Destination.Chat)
+        viewModelScope.launch { repository?.select(role.id) }
+    }
+    fun receiveShare(text: String) {
+        mutable.value = mutable.value.copy(sharedText = text, notice = null)
+        if (repository != null && !mutable.value.connecting) navigate(Destination.Conversations)
+    }
+    fun shareError(message: String) { mutable.value = mutable.value.copy(notice = message) }
+    fun dismissShare() { mutable.value = mutable.value.copy(sharedText = null) }
+    fun openWork(id: String) {
+        if (mutable.value.connecting) return
+        mutable.value = mutable.value.copy(viewedWorkId = id, viewedArtifactId = null)
+        navigate(Destination.WorkDetail)
+        viewModelScope.launch { repository?.openWork(id) }
+    }
+    fun previewArtifact(id: String) {
+        if (mutable.value.connecting) return
+        mutable.value = mutable.value.copy(viewedArtifactId = id)
+        navigate(Destination.ArtifactPreview)
+        viewModelScope.launch { repository?.previewArtifact(id) }
+    }
+    fun workDraft(value: String) {
+        val id = mutable.value.bot.workDetail?.work?.id ?: return
+        mutable.value = mutable.value.copy(workDrafts = mutable.value.workDrafts + (id to value))
+    }
+    fun submitWork(action: String) {
+        if (mutable.value.connecting || mutation?.isActive == true) return
+        val id = mutable.value.bot.workDetail?.work?.id ?: return
+        val text = mutable.value.workDrafts[id].orEmpty()
+        mutation = viewModelScope.launch {
+            if (repository?.submitWork(action, text) == true && action == "work.resume" && mutable.value.workDrafts[id] == text)
+                mutable.value = mutable.value.copy(workDrafts = mutable.value.workDrafts - id)
+        }
+    }
     fun navigate(destination: Destination) {
         if (mutable.value.connecting) return
         detailLoad?.cancel()
+        if (destination == Destination.WorkDetail) viewModelScope.launch { repository?.closeArtifact() }
+        if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) viewModelScope.launch { repository?.closeWork() }
         mutable.value = mutable.value.copy(destination = destination, notice = null, persona = null, memories = emptyList())
         if (destination == Destination.Conversations) viewModelScope.launch { repository?.select(null) }
         if (destination == Destination.Memories) loadMemories()
@@ -125,20 +174,20 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(drafts = mutable.value.drafts + (id to value))
     }
     fun send(text: String) {
-        if (mutable.value.connecting) return
+        if (mutable.value.connecting || mutation?.isActive == true) return
         val id = mutable.value.bot.selected ?: return
-        viewModelScope.launch {
+        mutation = viewModelScope.launch {
             if (repository?.send(text) == true && mutable.value.drafts[id] == text)
                 mutable.value = mutable.value.copy(drafts = mutable.value.drafts - id)
         }
     }
-    fun createRole(id: String, name: String) { if (mutable.value.connecting) return; viewModelScope.launch {
+    fun createRole(id: String, name: String) { if (mutable.value.connecting || mutation?.isActive == true) return; mutation = viewModelScope.launch {
         repository?.createRole(id, name)
         if (repository?.state?.value?.error == null) navigate(Destination.Chat)
     } }
-    fun retry(id: String) { if (mutable.value.connecting) return; viewModelScope.launch { repository?.retry(id) } }
-    fun removePending(id: String) { if (mutable.value.connecting) return; viewModelScope.launch { repository?.removePending(id) } }
-    fun savePersona(settings: PersonaSettings) { if (mutable.value.connecting) return; viewModelScope.launch {
+    fun retry(id: String) { if (mutable.value.connecting || mutation?.isActive == true) return; mutation = viewModelScope.launch { repository?.retry(id) } }
+    fun removePending(id: String) { if (mutable.value.connecting || mutation?.isActive == true) return; mutation = viewModelScope.launch { repository?.removePending(id) } }
+    fun savePersona(settings: PersonaSettings) { if (mutable.value.connecting || mutation?.isActive == true) return; mutation = viewModelScope.launch {
         repository?.savePersona(settings)
         if (repository?.state?.value?.error == null) navigate(Destination.Chat)
     } }

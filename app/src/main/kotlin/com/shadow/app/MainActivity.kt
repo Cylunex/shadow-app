@@ -1,6 +1,9 @@
 package com.shadow.app
 
+import android.content.Intent
 import android.os.Bundle
+import androidx.lifecycle.ViewModelProvider
+import androidx.compose.ui.text.style.TextOverflow
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -36,14 +39,25 @@ import java.util.Locale
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
+    private val model by lazy { ViewModelProvider(this)[BotViewModel::class.java] }
+    private fun receiveShare(incoming: Intent?) {
+        if (incoming == null) return
+        try {
+            val key = if (incoming.action == Intent.ACTION_PROCESS_TEXT) Intent.EXTRA_PROCESS_TEXT else Intent.EXTRA_TEXT
+            SharedText.read(incoming.action, incoming.type, incoming.getCharSequenceExtra(key))?.let(model::receiveShare)
+            incoming.removeExtra(key)
+        } catch (_: Exception) { model.shareError("无法接收这段文字，请分享不超过 4000 字的纯文本。") }
+    }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); receiveShare(intent) }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) receiveShare(intent)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         enableEdgeToEdge()
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF426859), onPrimary = Color.White,
                 primaryContainer = Color(0xFFDCE9DF), background = Color(0xFFF8F8F4), surface = Color(0xFFF8F8F4),
-                surfaceVariant = Color(0xFFEEEEE8))) { BotApp() }
+                surfaceVariant = Color(0xFFEEEEE8))) { BotApp(model) }
         }
     }
 }
@@ -63,7 +77,12 @@ class MainActivity : ComponentActivity() {
     }
     val role = state.bot.roles.find { it.id == state.bot.selected }
     val back = {
-        vm.navigate(if (state.destination in listOf(Destination.Progress, Destination.Persona, Destination.Memories)) Destination.Chat else Destination.Conversations)
+        vm.navigate(when (state.destination) {
+            Destination.WorkDetail -> Destination.Progress
+            Destination.ArtifactPreview -> Destination.WorkDetail
+            Destination.Progress, Destination.Persona, Destination.Memories -> Destination.Chat
+            else -> Destination.Conversations
+        })
     }
     BackHandler(state.destination != Destination.Conversations && state.bot.connected) { back() }
     Scaffold(topBar = {
@@ -73,6 +92,8 @@ class MainActivity : ComponentActivity() {
             Destination.Settings -> "连接设置"
             Destination.CreateRole -> "新的伙伴"
             Destination.Progress -> "事项进度"
+            Destination.WorkDetail -> "事项详情"
+            Destination.ArtifactPreview -> "成果预览"
             Destination.Memories -> "共享记忆"
             Destination.Persona -> "角色与人设"
         }, fontWeight = FontWeight.SemiBold) }, navigationIcon = {
@@ -95,7 +116,9 @@ class MainActivity : ComponentActivity() {
                 Destination.Chat -> Chat(state, vm)
                 Destination.Settings -> Settings(state, vm)
                 Destination.CreateRole -> CreateRole(state, vm)
-                Destination.Progress -> Progress(state.bot.works)
+                Destination.Progress -> Progress(state.bot, vm)
+                Destination.WorkDetail -> WorkDetailScreen(state, vm)
+                Destination.ArtifactPreview -> ArtifactScreen(state)
                 Destination.Memories -> Memories(state.memories)
                 Destination.Persona -> PersonaEditor(state, vm)
             }
@@ -104,11 +127,19 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun Contacts(state: ScreenState, vm: BotViewModel) {
+    var query by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
+        if (state.sharedText != null) Surface(color = MaterialTheme.colorScheme.primaryContainer) {
+            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("选择伙伴，将分享内容放入输入框。", Modifier.weight(1f))
+                TextButton(onClick = vm::dismissShare) { Text("取消") }
+            }
+        }
+        OutlinedTextField(query, { query = it }, placeholder = { Text("搜索伙伴或最近消息") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp))
         Text("聊一聊，也一起把事情做好。", Modifier.padding(horizontal = 24.dp, vertical = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (state.bot.roles.isEmpty()) Empty(if (state.bot.busy) "正在连接你的伙伴…" else "连接 Losna，开始一段对话。")
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(state.bot.roles, key = { it.id }) { role ->
+            items(state.bot.roles.filter { query.isBlank() || it.name.contains(query, true) || it.preview.contains(query, true) }, key = { it.id }) { role ->
                 Surface(shape = RoundedCornerShape(22.dp), color = Color.White, modifier = Modifier.fillMaxWidth().clickable { vm.open(role) }) {
                     Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(50.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape), contentAlignment = Alignment.Center) {
@@ -117,9 +148,10 @@ class MainActivity : ComponentActivity() {
                         Column(Modifier.weight(1f).padding(start = 16.dp)) {
                             Text(role.name, style = MaterialTheme.typography.titleMedium)
                             val pending = state.bot.pending.count { it.entryId == role.id }
-                            Text(if (pending > 0) "$pending 条消息待确认" else "继续对话", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (pending > 0) "$pending 条操作待确认" else role.preview.ifBlank { "继续对话" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (role.activeWorks > 0) Text("${role.activeWorks} 项正在处理或等待继续", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
-                        Text("›", style = MaterialTheme.typography.headlineSmall)
+                        Text(time(role.lastMessageAt), style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -150,7 +182,7 @@ class MainActivity : ComponentActivity() {
             }
             items(pending, key = { "pending:${it.id}" }) { message ->
                 Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
-                    MessageBubble(message.text, true, "等待确认")
+                    MessageBubble(message.text.ifBlank { message.label }, true, "${message.label}等待确认")
                     Row {
                         TextButton(onClick = { vm.retry(message.id) }, enabled = !bot.busy && !bot.needsLogin) { Text("重试") }
                         TextButton(onClick = { vm.removePending(message.id) }, enabled = !bot.busy) { Text("移除待发记录") }
@@ -199,7 +231,7 @@ class MainActivity : ComponentActivity() {
         if (state.bot.pending.isNotEmpty()) item { Text("待确认消息", style = MaterialTheme.typography.titleMedium) }
         items(state.bot.pending, key = { it.id }) { pending ->
             Column {
-                Text(pending.text, maxLines = 3)
+                Text("${pending.label}：${pending.text.ifBlank { "等待服务端确认" }}", maxLines = 3)
                 Row {
                     TextButton(onClick = { vm.retry(pending.id) }, enabled = !state.bot.busy && !state.connecting && !state.bot.needsLogin) { Text("重试") }
                     TextButton(onClick = { vm.removePending(pending.id) }, enabled = !state.bot.busy && !state.connecting) { Text("移除待发记录") }
@@ -210,10 +242,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun Progress(works: List<Work>) {
+@Composable private fun Progress(bot: BotState, vm: BotViewModel) {
+    val works = bot.works
     LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (works.isEmpty()) item { Empty("还没有事项，直接在聊天里交代就好。") }
-        items(works, key = { it.id }) { work -> Surface(shape = RoundedCornerShape(18.dp), color = Color.White) {
+        items(works, key = { it.id }) { work -> Surface(shape = RoundedCornerShape(18.dp), color = Color.White,
+            modifier = Modifier.clickable(enabled = "workDetails" in bot.capabilities) { vm.openWork(work.id) }) {
             Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(work.goal, style = MaterialTheme.typography.titleMedium)
                 Text(workState(work.state), color = MaterialTheme.colorScheme.primary)
@@ -221,7 +255,7 @@ class MainActivity : ComponentActivity() {
                 if (work.nextStep.isNotBlank()) Text(work.nextStep, style = MaterialTheme.typography.bodySmall)
             }
         } }
-        item { Text("需要补充、继续或取消时，在聊天里告诉伙伴。", style = MaterialTheme.typography.bodySmall) }
+        item { Text(if ("workDetails" in bot.capabilities) "点开事项查看计划与成果，也可以直接在聊天里继续。" else "需要补充、继续或取消时，在聊天里告诉伙伴。", style = MaterialTheme.typography.bodySmall) }
     }
 }
 @Composable private fun Memories(memories: List<MemoryItem>) {
@@ -261,7 +295,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 @Composable private fun Empty(text: String) { Text(text, Modifier.fillMaxWidth().padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-private fun time(at: Long) = if (at <= 0) "" else SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(at))
-private fun workState(value: String) = when(value) {
-    "queued" -> "等待处理"; "running" -> "正在处理"; "waiting" -> "等待继续"; "completed" -> "已完成"; "cancelled" -> "已取消"; "failed" -> "暂未完成"; else -> "状态待更新"
+internal fun time(at: Long) = if (at <= 0) "" else SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(at))
+internal fun workState(value: String) = when(value) {
+    "queued" -> "等待处理"; "running" -> "正在处理"; "waiting" -> "等待继续"; "completed" -> "已完成"; "cancelled" -> "已取消"; "failed" -> "暂未完成"; "excluded" -> "已停止使用"; "interrupted" -> "执行中断"; "superseded" -> "已被新的要求接替"; else -> "状态待更新"
 }

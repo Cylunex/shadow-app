@@ -11,7 +11,7 @@ class HttpProductApiTest {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"accepted":true,"sourceId":"source-one"}"""))
             val api = HttpProductApi.fixture(server.url("/dsh/"))
-            assertEquals("source-one", api.send(PendingMessage("command-one", "doll", "中文正文", 123), "host-one"))
+            assertEquals("source-one", api.send(PendingCommand("command-one", "doll", "中文正文", 123), "host-one"))
             val request = server.takeRequest()
             assertEquals("/dsh/losna/agent/api/commands", request.path)
             assertEquals("1", request.getHeader("X-Losna-Request"))

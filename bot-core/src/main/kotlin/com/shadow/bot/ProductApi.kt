@@ -18,10 +18,13 @@ import java.util.concurrent.TimeUnit
 class ApiFailure(val status: Int, message: String) : IOException(message)
 interface ProductApi {
     suspend fun createRole(id: String, name: String): String
+    suspend fun inbox(): Inbox
+    suspend fun work(id: String, entryId: String): WorkDetail
+    suspend fun artifact(id: String, entryId: String): ArtifactText
     suspend fun handshake(): Handshake
     suspend fun snapshot(entryId: String): Snapshot
     suspend fun events(after: Long): Events
-    suspend fun send(message: PendingMessage, generation: String): String
+    suspend fun send(message: PendingCommand, generation: String): String
     suspend fun personas(entryId: String): PersonaSettings
     suspend fun savePersona(settings: PersonaSettings): PersonaSettings
     suspend fun memories(): List<MemoryItem>
@@ -51,7 +54,9 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
             if (!response.isSuccessful) throw ApiFailure(response.code, when (response.code) {
                 401 -> "登录已过期，请重新连接。"
                 403 -> "服务拒绝了当前请求，请检查入口配置。"
-                409 -> "服务状态已变化，请刷新后重试。"
+                404 -> "内容已不可用，可能已被移除或遗忘。"
+                409 -> "事项已更新。请查看最新状态，再决定是否提交新的操作；原记录不会自动覆盖新版本。"
+                415 -> "此成果暂不支持文本预览。"
                 413 -> "消息过长，请缩短后发送。"
                 else -> "服务暂时不可用（${response.code}）。"
             })
@@ -72,16 +77,36 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         val row = request("snapshot?entryId=${encode(entryId)}")
         return Snapshot(row.getString("generation"), row.getJSONObject("conversation").getString("id"),
             row.getJSONArray("messages").objects().map { Message(it.getString("id"), it.getString("role"), it.string("text"), it.optLong("at"), it.string("personaName"), it.string("state")) },
-            row.getJSONArray("works").objects().map { Work(it.getString("id"), it.optString("entryId", "losna"), it.string("goal"), it.string("state"), it.string("result"), it.string("nextStep")) }, row.getLong("cursor"))
+            (row.optJSONArray("entryWorks") ?: row.getJSONArray("works")).objects().map(::parseWork), row.getLong("cursor"))
     }
     override suspend fun events(after: Long): Events = request("events?after=$after").let {
         Events(it.getString("generation"), it.getLong("cursor"), it.getJSONArray("items").length() > 0, it.optBoolean("resetRequired"), it.optBoolean("hasMore"))
     }
-    override suspend fun send(message: PendingMessage, generation: String): String {
-        val result = request("commands", JSONObject().put("id", message.id).put("generation", generation)
-            .put("action", "message").put("entryId", message.entryId).put("text", message.text))
+    override suspend fun send(message: PendingCommand, generation: String): String {
+        val body = JSONObject().put("id", message.id).put("generation", generation).put("action", message.action).put("entryId", message.entryId)
+        if (message.action != "work.cancel") body.put("text", message.text)
+        message.workId?.let { body.put("workId", it).put("expectedVersion", message.expectedVersion) }
+        val result = request("commands", body)
         check(result.optBoolean("accepted")) { "消息尚未被接收。" }
         return result.getString("sourceId")
+    }
+    override suspend fun inbox(): Inbox = request("inbox").let { row ->
+        Inbox(row.getString("generation"), row.getJSONArray("items").objects().map {
+            val last = it.optJSONObject("lastMessage")
+            InboxItem(it.getString("entryId"), last?.string("text").orEmpty(), last?.optLong("at") ?: 0, it.optInt("activeWorks"))
+        })
+    }
+    private fun parseWork(row: JSONObject) = Work(row.getString("id"), row.optString("entryId", "losna"), row.string("goal"), row.string("state"),
+        row.string("result"), row.string("nextStep"), row.optLong("version"), row.optBoolean("paused"))
+    override suspend fun work(id: String, entryId: String): WorkDetail = request("work-detail/${encode(id)}?entryId=${encode(entryId)}").let { row ->
+        val actions = row.getJSONArray("allowedActions")
+        WorkDetail(parseWork(row), row.getJSONArray("plan").objects().map { PlanStep(it.string("content"), it.string("status")) },
+            row.getJSONArray("runs").objects().map { WorkRun(it.getString("id"), it.string("state"), it.optLong("startedAt"), it.optLong("finishedAt"), it.string("result"), it.optBoolean("resultTruncated")) },
+            row.getJSONArray("artifacts").objects().map { Artifact(it.getString("id"), it.string("name"), it.optLong("size"), it.string("type"), it.optBoolean("textPreview")) },
+            (0 until actions.length()).map(actions::getString).toSet(), row.optBoolean("resultTruncated"), row.optBoolean("planTruncated"))
+    }
+    override suspend fun artifact(id: String, entryId: String): ArtifactText = request("artifact-text/${encode(id)}?entryId=${encode(entryId)}").let {
+        ArtifactText(it.getString("id"), it.getString("workId"), it.getString("name"), it.getString("text"), it.getBoolean("truncated"))
     }
     override suspend fun personas(entryId: String) = parsePersona(request("persona?entryId=${encode(entryId)}"))
     override suspend fun savePersona(settings: PersonaSettings): PersonaSettings = parsePersona(request("persona", JSONObject()
