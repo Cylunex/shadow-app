@@ -164,4 +164,22 @@ class BotScreenTest {
         compose.onNodeWithText("保存").assertIsDisplayed(); compose.onNodeWithText("分享").assertIsDisplayed()
         screenshot("artifact-export-393")
     }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun personaCardsDuplicateRemoveAndKeepSaveReachable() {
+        val original = PersonaSettings("assistant", 1, "default", true,
+            listOf(PersonaCard("default", "默认", "小影", "自然交流", true)))
+        val draft = mutableStateOf(original)
+        var saved: PersonaSettings? = null
+        compose.setContent { BotTheme { androidx.compose.material3.Surface { PersonaForm(draft.value, false, { draft.value = it }, { saved = it }, {}, {}, {}) } } }
+        compose.onNodeWithText("导入人设").assertIsDisplayed()
+        compose.onNodeWithText("移除").assertIsNotEnabled()
+        compose.onNodeWithText("复制当前卡").performClick()
+        compose.onNode(hasText("默认 (2)") and !hasSetTextAction()).assertIsDisplayed()
+        screenshot("persona-cards-320")
+        compose.onNodeWithText("移除").performClick()
+        assertEquals(original, draft.value)
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("保存人设"))
+        compose.onNodeWithText("保存人设").assertIsEnabled().performClick()
+        assertEquals(original, saved)
+    }
+
 }

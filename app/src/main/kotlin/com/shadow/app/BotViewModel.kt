@@ -31,7 +31,7 @@ data class AttachmentPreviewData(val attachment: Attachment, val bytes: ByteArra
 data class ScreenState(val bot: BotState = BotState(), val destination: Destination = Destination.Conversations,
     val baseUrl: String = "", val connecting: Boolean = false, val notice: String? = null,
     val drafts: Map<String, String> = emptyMap(), val workDrafts: Map<String, String> = emptyMap(), val sharedText: String? = null, val viewedWorkId: String? = null, val viewedArtifactId: String? = null,
-    val persona: PersonaSettings? = null, val memories: List<MemoryItem> = emptyList(), val storageError: Boolean = false, val memoryDetail: MemoryDetail? = null,
+    val persona: PersonaSettings? = null, val personaDraft: PersonaSettings? = null, val memories: List<MemoryItem> = emptyList(), val storageError: Boolean = false, val memoryDetail: MemoryDetail? = null,
     val attachmentDrafts: Map<String, List<AttachmentDraft>> = emptyMap(), val sharedUris: List<String> = emptyList(),
     val attachmentPreview: AttachmentPreviewData? = null, val attachmentLoading: Boolean = false, val speaking: Boolean = false)
 
@@ -45,6 +45,9 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     private var foreground = false
     private var detailLoad: Job? = null
     private var mutation: Job? = null
+    private var personaEditorEpoch = 0L
+    private var personaImportTarget: Triple<Long, String, String>? = null
+    private var personaExportTarget: Pair<Long, PersonaCard>? = null
     private var speech: DeviceSpeech? = null
     private var spokenText: String? = null
     private var dictationEntry: String? = null
@@ -230,12 +233,13 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         stopSpeaking()
         if (mutable.value.connecting) return
         detailLoad?.cancel()
+        personaEditorEpoch++
         if (destination == Destination.WorkDetail) viewModelScope.launch { repository?.closeArtifact() }
         if (destination !in listOf(Destination.WorkDetail, Destination.ArtifactPreview)) viewModelScope.launch { repository?.closeWork() }
-        mutable.value = mutable.value.copy(destination = destination, notice = null, persona = null, memories = emptyList(), memoryDetail = null, attachmentPreview = null, attachmentLoading = false)
+        mutable.value = mutable.value.copy(destination = destination, notice = null, persona = null, personaDraft = null, memories = emptyList(), memoryDetail = null, attachmentPreview = null, attachmentLoading = false)
         if (destination == Destination.Conversations) viewModelScope.launch { repository?.select(null) }
         if (destination == Destination.Memories) loadMemories()
-        if (destination == Destination.Persona) mutable.value.bot.selected?.let { id -> load { mutable.value = mutable.value.copy(persona = repository?.persona(id)) } }
+        if (destination == Destination.Persona) mutable.value.bot.selected?.let { id -> load { val value = repository?.persona(id); mutable.value = mutable.value.copy(persona = value, personaDraft = value) } }
     }
     fun inspectMemory(id: String) = load {
         mutable.value = mutable.value.copy(memoryDetail = null)
@@ -422,7 +426,48 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     } }
     fun retry(id: String) { if (mutable.value.connecting || mutation?.isActive == true) return; mutation = viewModelScope.launch { repository?.retry(id) } }
     fun removePending(id: String) { if (mutable.value.connecting || mutation?.isActive == true) return; mutation = viewModelScope.launch { repository?.removePending(id) } }
+    fun editPersona(settings: PersonaSettings) {
+        if (settings.entryId == mutable.value.persona?.entryId && !mutable.value.bot.busy)
+            mutable.value = mutable.value.copy(personaDraft = settings)
+    }
+    fun preparePersonaImport() {
+        val current = mutable.value
+        personaImportTarget = current.personaDraft?.let { Triple(personaEditorEpoch, it.entryId, current.baseUrl) }
+    }
+    fun importPersona(uri: Uri?) {
+        val target = personaImportTarget; personaImportTarget = null
+        if (uri == null || target == null || target.first != personaEditorEpoch) return
+        val (epoch, entry, server) = target
+        val repo = repository
+        viewModelScope.launch {
+            try {
+                val imported = withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.use(PersonaFiles::read) ?: error("无法读取文件。")
+                }
+                val current = mutable.value
+                if (epoch != personaEditorEpoch || repository !== repo || current.baseUrl != server || current.destination != Destination.Persona || current.personaDraft?.entryId != entry || current.bot.busy) return@launch
+                mutable.value = current.copy(personaDraft = PersonaFiles.add(current.personaDraft, imported.card), notice = imported.note)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { if (epoch == personaEditorEpoch && repository === repo && mutable.value.destination == Destination.Persona) shareError(if (error is IllegalArgumentException) error.message ?: "人设格式无效。" else "无法读取人设文件，请重新选择。") }
+        }
+    }
+    fun preparePersonaExport(card: PersonaCard) { personaExportTarget = personaEditorEpoch to card }
+    fun exportPersona(uri: Uri?) {
+        val target = personaExportTarget; personaExportTarget = null
+        if (uri == null || target == null || target.first != personaEditorEpoch || mutable.value.destination != Destination.Persona) return
+        val card = target.second
+        viewModelScope.launch {
+            try {
+                val text = PersonaFiles.encode(card)
+                withContext(Dispatchers.IO) { getApplication<Application>().contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) } ?: error("无法保存文件。") }
+                android.widget.Toast.makeText(getApplication(), "人设已导出", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (error: CancellationException) { throw error }
+            catch (_: Exception) { shareError("人设导出失败，请检查资料并重新选择位置。") }
+        }
+    }
     fun savePersona(settings: PersonaSettings) { if (mutable.value.connecting || mutation?.isActive == true) return; mutation = viewModelScope.launch {
+        val validation = PersonaFiles.validation(settings)
+        if (validation != null) { shareError(validation); return@launch }
         repository?.savePersona(settings)
         if (repository?.state?.value?.error == null) navigate(Destination.Chat)
     } }

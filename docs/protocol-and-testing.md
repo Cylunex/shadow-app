@@ -62,3 +62,7 @@ Android SEND / PROCESS_TEXT 的文字最多 4000 字符，选择伙伴后追加�
 服务端修改还须在 Losna 运行 `npm run check` 与 `npm test`。所有上述命令不执行 APK assemble、签名、安装或生产部署。
 
 附件命令可附 `attachmentIds`，无正文但有有效附件时允许发送。上传沿用 `X-Losna-Request: 1` 与 DSH Cookie；Life CLI 调用 `assets.upload_local_attachment`，通用 HTTP 接口仍为 `/api/assets`。资产回执与 SHA-256 校验、入会话绑定和原编号重试见 [附件设计](bot-dark-ui-and-attachments.md)。
+
+## 人格卡文件（0.9.0）
+
+文件交换仅在手机解析，保存仍使用原 `POST persona` 与 revision；卡片复制／导入生成新 ID，移除保留默认卡，不修改联系人和会话归属。文件格式、字段上限、冲突处理和未实现格式见[人格卡文件说明](bot-persona-files.md)。

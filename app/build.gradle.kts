@@ -10,8 +10,8 @@ android {
         applicationId = "com.shadow.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.8.0"
+        versionCode = 19
+        versionName = "0.9.0"
     }
     buildFeatures { compose = true }
     testOptions { unitTests.isIncludeAndroidResources = true }

@@ -226,32 +226,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun PersonaEditor(state: ScreenState, vm: BotViewModel) {
-    val original = state.persona
-    if (original == null) { Empty("正在读取人设…"); return }
-    var draft by remember(original) { mutableStateOf(original) }
-    val card = draft.cards.first { it.id == draft.active }
-    fun update(change: (PersonaCard) -> PersonaCard) { draft = draft.copy(cards = draft.cards.map { if (it.id == card.id) change(it) else it }) }
-    LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { Text("人设可以切换，当前会话与已有关系继续保留。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        items(draft.cards, key = { it.id }) { choice ->
-            Row(Modifier.fillMaxWidth().clickable { draft = draft.copy(active = choice.id) }, verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = draft.active == choice.id, onClick = { draft = draft.copy(active = choice.id) }); Text(choice.name)
-            }
-        }
-        item { TextButton(onClick = {
-            val id = "custom-" + UUID.randomUUID().toString().take(8)
-            val new = PersonaCard(id, "自定义 ${draft.cards.size}", card.displayName, "", false)
-            draft = draft.copy(active = id, cards = draft.cards + new)
-        }, enabled = draft.cards.size < 20) { Text("添加自定义人设") } }
-        item { OutlinedTextField(card.name, { value -> update { it.copy(name = value.take(60)) } }, label = { Text("人设卡名称") }, modifier = Modifier.fillMaxWidth()) }
-        item { OutlinedTextField(card.displayName, { value -> update { it.copy(displayName = value.take(100)) } }, label = { Text("显示名字") }, modifier = Modifier.fillMaxWidth()) }
-        item { OutlinedTextField(card.instructions, { value -> update { it.copy(instructions = value.take(12000)) } }, label = { Text("性格、表达与轻量角色设定") }, minLines = 6, modifier = Modifier.fillMaxWidth()) }
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Switch(card.inheritIdentity, { value -> update { it.copy(inheritIdentity = value) } }); Text("沿用原身份设定", Modifier.padding(start = 12.dp)) } }
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Switch(draft.contactEnabled, { draft = draft.copy(contactEnabled = it) }); Text("允许主动聊天", Modifier.padding(start = 12.dp)) } }
-        item { Button(onClick = { vm.savePersona(draft) }, enabled = !state.bot.busy && card.name.isNotBlank() && card.displayName.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("保存人设") } }
-    }
-}
 @Composable private fun Empty(text: String) { Text(text, Modifier.fillMaxWidth().padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
 internal fun time(at: Long) = if (at <= 0) "" else SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(at))
 internal fun workState(value: String) = when(value) {

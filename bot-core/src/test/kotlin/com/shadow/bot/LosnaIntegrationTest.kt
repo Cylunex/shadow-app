@@ -26,6 +26,17 @@ class LosnaIntegrationTest {
             val persona = api.personas(id)
             api.savePersona(persona.copy(cards = persona.cards.map { if (it.id == persona.active) it.copy(displayName = "合成小舟", instructions = "合成资料", inheritIdentity = false) else it }))
             assertEquals("合成小舟", api.handshake().roles.first { it.id == id }.name)
+            val beforeImport = api.personas(id)
+            val imported = PersonaFiles.decode("""{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"合成导入伙伴","description":"合成性格"}}""").card
+            val withImport = api.savePersona(PersonaFiles.add(beforeImport, imported))
+            assertEquals("合成导入伙伴", api.handshake().roles.first { it.id == id }.name)
+            assertEquals("main:owner:$id", api.handshake().roles.first { it.id == id }.conversationId)
+            try { api.savePersona(beforeImport); fail("stale card edits must not overwrite imported cards") }
+            catch (error: ApiFailure) { assertEquals(409, error.status) }
+            assertEquals(withImport, api.personas(id))
+            api.savePersona(PersonaFiles.remove(withImport, withImport.active))
+            assertEquals("合成小舟", api.handshake().roles.first { it.id == id }.name)
+
             val message = PendingCommand(UUID.randomUUID().toString(), id, "synthetic conversation", 1)
             val receipt = api.send(message, hello.generation)
             assertEquals(receipt, api.send(message, hello.generation))
