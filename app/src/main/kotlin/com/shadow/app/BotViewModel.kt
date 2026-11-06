@@ -30,7 +30,7 @@ sealed interface Destination {
 typealias AttachmentDraft = com.shadow.bot.AttachmentDraft
 data class AttachmentPreviewData(val attachment: Attachment, val bytes: ByteArray)
 data class ScreenState(val bot: BotState = BotState(), val destination: Destination = Destination.Conversations,
-    val baseUrl: String = "", val connecting: Boolean = false, val notice: String? = null,
+    val baseUrl: String = "", val loginName: String? = null, val connecting: Boolean = false, val notice: String? = null,
     val drafts: Map<String, String> = emptyMap(), val workDrafts: Map<String, String> = emptyMap(), val sharedText: String? = null, val viewedWorkId: String? = null, val viewedArtifactId: String? = null,
     val persona: PersonaSettings? = null, val personaDraft: PersonaSettings? = null, val memories: List<MemoryItem> = emptyList(), val storageError: Boolean = false, val memoryDetail: MemoryDetail? = null,
     val attachmentDrafts: Map<String, List<AttachmentDraft>> = emptyMap(), val sharedUris: List<String> = emptyList(),
@@ -78,18 +78,18 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
             val session = saved.session
             mutable.value = mutable.value.copy(baseUrl = session?.baseUrl.orEmpty(), drafts = saved.drafts, workDrafts = saved.workDrafts, attachmentDrafts = saved.attachmentDrafts)
             store.pruneDraftFiles()
-            if (session != null) attach(HttpProductApi.from(session), session.baseUrl)
+            if (session != null) attach(authenticatedApi(getApplication(), store, session), session.baseUrl)
             else mutable.value = mutable.value.copy(destination = Destination.Settings)
         } catch (_: Exception) { mutable.value = mutable.value.copy(storageError = true, notice = "本地加密资料无法读取；原文件已保留，请恢复资料后重试。") }
     }
     private fun attach(api: HttpProductApi, baseUrl: String) {
-        val sameServer = mutable.value.baseUrl == baseUrl
+        val saved = store.read()
         uploads.values.forEach { it.cancel() }; uploads.clear()
         polling?.cancel(); collector?.cancel()
         val repo = BotRepository(api, store); repository = repo
-        mutable.value = mutable.value.copy(baseUrl = baseUrl, destination = Destination.Conversations, persona = null, memories = emptyList(),
-            drafts = if (sameServer) mutable.value.drafts else emptyMap(), workDrafts = if (sameServer) mutable.value.workDrafts else emptyMap(),
-            attachmentDrafts = if (sameServer) mutable.value.attachmentDrafts.mapValues { (_, drafts) -> drafts.map { if (it.uploaded != null) it else it.copy(status = "failed", error = "连接已恢复，请重试上传。") } } else emptyMap(),
+        mutable.value = mutable.value.copy(bot = BotState(), baseUrl = baseUrl, loginName = saved.session?.oidc?.name, destination = Destination.Conversations, persona = null, personaDraft = null, memories = emptyList(), memoryDetail = null, viewedWorkId = null, viewedArtifactId = null,
+            drafts = saved.drafts, workDrafts = saved.workDrafts,
+            attachmentDrafts = saved.attachmentDrafts.mapValues { (_, drafts) -> drafts.map { if (it.uploaded != null) it else it.copy(status = "failed", error = "连接已恢复，请重试上传。") } },
             attachmentPreview = null)
         collector = viewModelScope.launch { repo.state.collect { bot ->
             if (spokenText != null && bot.messages.none { it.text == spokenText }) stopSpeaking()
@@ -100,6 +100,29 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repo.refresh() }
         startPolling()
     }
+    fun beginUnifiedLogin(address: String): String? {
+        if (mutable.value.connecting || mutable.value.storageError || mutable.value.bot.busy || mutation?.isActive == true) return null
+        return try {
+            val base = HttpProductApi.normalizeBase(address)
+            val saved = store.read()
+            require(saved.pending.isEmpty() || saved.session?.baseUrl == base) { "请先处理原服务的待发记录。" }
+            polling?.cancel(); detailLoad?.cancel()
+            uploads.values.forEach { it.cancel() }; uploads.clear()
+            mutable.value = mutable.value.copy(connecting = true, notice = null)
+            base
+        } catch (error: Exception) { mutable.value = mutable.value.copy(notice = error.message ?: "无法开始登录。"); null }
+    }
+    fun finishUnifiedLogin(success: Boolean) {
+        mutable.value = mutable.value.copy(connecting = false)
+        if (success) {
+            try {
+                val saved = store.read(); val session = requireNotNull(saved.session)
+                mutable.value = mutable.value.copy(drafts = saved.drafts, workDrafts = saved.workDrafts, attachmentDrafts = saved.attachmentDrafts)
+                attach(authenticatedApi(getApplication(), store, session), session.baseUrl)
+            } catch (_: Exception) { mutable.value = mutable.value.copy(notice = "无法读取登录资料，请重新登录。") }
+        } else mutable.value = mutable.value.copy(notice = "登录未完成，原连接保持不变。")
+        startPolling()
+    }
     fun connect(address: String, token: String) {
         if (mutable.value.connecting || mutable.value.storageError || mutable.value.bot.busy || mutation?.isActive == true) return
         mutable.value = mutable.value.copy(connecting = true, notice = null)
@@ -108,13 +131,20 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val base = HttpProductApi.normalizeBase(address)
                 val previous = store.read()
-                require(previous.pending.isEmpty() || previous.session?.baseUrl == base) { "请先处理原连接的待发消息，再更换服务地址。" }
+                require(previous.pending.isEmpty() || previous.session?.baseUrl == base && previous.session?.oidc == null) { "请先处理原连接的待发消息，再更换服务地址。" }
                 val api = HttpProductApi.from(Session(base, emptyList()))
                 api.login(token); api.handshake()
-                val current = store.read()
-                require(current.pending.isEmpty() || current.session?.baseUrl == base) { "请先处理原连接的待发记录。" }
-                if (current.session?.baseUrl != base) { store.clearCache(); java.io.File(getApplication<Application>().cacheDir, "shared-results").deleteRecursively() }
-                store.write(if (current.session?.baseUrl == base) current.copy(session = api.session()) else SavedState(session = api.session()))
+                val session = api.session()
+                var keepData = false
+                store.update { current ->
+                    keepData = current.session?.canKeepData(session) == true
+                    require(current.pending.isEmpty() || keepData) { "请使用原登录方式处理待发记录。" }
+                    if (keepData) current.copy(session = session) else SavedState(session = session)
+                }
+                if (!keepData) {
+                    store.clearCache(); store.writePrivate("notifications", "{}"); store.writePrivate("read-marks", "{}")
+                    java.io.File(getApplication<Application>().cacheDir, "shared-results").deleteRecursively()
+                }
                 store.pruneDraftFiles()
                 attach(api, base)
             } catch (error: CancellationException) { throw error }
@@ -137,6 +167,7 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
             store.clearCache()
             java.io.File(getApplication<Application>().cacheDir, "shared-results").deleteRecursively()
             store.write(SavedState())
+            store.writePrivate("oidc-login", "{}")
             store.pruneDraftFiles()
             uploads.values.forEach { it.cancel() }; uploads.clear()
             polling?.cancel(); detailLoad?.cancel(); collector?.cancel(); repository = null
@@ -292,8 +323,8 @@ class BotViewModel(application: Application) : AndroidViewModel(application) {
     }
     private fun saveDrafts(next: ScreenState): Boolean {
         return try {
-            store.write(store.read().copy(drafts = next.drafts.filterValues { it.isNotEmpty() },
-                workDrafts = next.workDrafts.filterValues { it.isNotEmpty() }, attachmentDrafts = next.attachmentDrafts.filterValues { it.isNotEmpty() }))
+            store.update { it.copy(drafts = next.drafts.filterValues { it.isNotEmpty() },
+                workDrafts = next.workDrafts.filterValues { it.isNotEmpty() }, attachmentDrafts = next.attachmentDrafts.filterValues { it.isNotEmpty() }) }
             mutable.value = next
             true
         } catch (_: Exception) {

@@ -38,7 +38,10 @@ interface ProductApi {
     suspend fun memories(): List<MemoryItem>
 }
 
-class HttpProductApi private constructor(private val base: HttpUrl, cookies: List<String>) : ProductApi {
+fun interface BearerTokens { suspend fun token(): String }
+
+class HttpProductApi private constructor(private val base: HttpUrl, cookies: List<String>, private val bearer: BearerTokens? = null) : ProductApi {
+    private val connectionId = java.util.UUID.randomUUID().toString()
     private val jar = object : CookieJar {
         val values = cookies.mapNotNull { Cookie.parse(base, it) }.toMutableList()
         override fun loadForRequest(url: HttpUrl): List<Cookie> = synchronized(values) {
@@ -52,7 +55,15 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
         }
     }
     // Never forward credentials to redirect destinations or silently retry a POST.
-    private val client = OkHttpClient.Builder().cookieJar(jar).followRedirects(false).followSslRedirects(false)
+    private val client = OkHttpClient.Builder().cookieJar(if (bearer == null) jar else CookieJar.NO_COOKIES).followRedirects(false).followSslRedirects(false)
+        .addInterceptor { chain ->
+            val request = chain.request()
+            if (bearer == null) chain.proceed(request) else {
+                require(request.url.scheme == base.scheme && request.url.host == base.host && request.url.port == base.port && request.url.encodedPath.startsWith(endpoint("").encodedPath))
+                val token = kotlinx.coroutines.runBlocking { bearer.token() }
+                chain.proceed(request.newBuilder().header("Authorization", "Bearer $token").removeHeader("Cookie").build())
+            }
+        }
         .retryOnConnectionFailure(false).connectTimeout(15, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
     private fun endpoint(path: String) = base.resolve("losna/agent/api/$path")!!
     private suspend fun request(path: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
@@ -72,6 +83,8 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
             JSONObject(response.body!!.string())
         }
     }
+    suspend fun nativeLoginConfig(): JSONObject = request("auth/native/config")
+    suspend fun nativeIdentity(): JSONObject = request("auth/me")
     override suspend fun createRole(id: String, name: String): String = request("roles", JSONObject().put("id", id).put("name", name)).getString("entryId")
     override suspend fun handshake(): Handshake {
         val row = request("handshake")
@@ -169,7 +182,7 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
     }
     private fun parsePersona(row: JSONObject) = PersonaSettings(row.getString("entryId"), row.getInt("revision"), row.getString("active"), row.getBoolean("contactEnabled"),
         row.getJSONArray("cards").objects().map { PersonaCard(it.getString("id"), it.getString("name"), it.optString("displayName", row.string("baseName")), it.getString("instructions"), it.optBoolean("inheritIdentity", true)) })
-    fun session() = Session(base.toString(), synchronized(jar.values) { jar.values.map(Cookie::toString) })
+    fun session() = Session(base.toString(), synchronized(jar.values) { jar.values.map(Cookie::toString) }, id = connectionId)
     override suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment = withContext(Dispatchers.IO) {
         require(bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024) { "单个附件不能超过 20 MiB。" }
         val url = endpoint("attachments").newBuilder().addQueryParameter("id", id).addQueryParameter("entryId", entryId).addQueryParameter("name", name).build()
@@ -205,9 +218,12 @@ class HttpProductApi private constructor(private val base: HttpUrl, cookies: Lis
             require(url.isHttps && url.username.isEmpty() && url.password.isEmpty() && url.query == null && url.fragment == null) { "请填写不含口令或参数的 HTTPS DSH 地址。" }
             return url.newBuilder().encodedPath(url.encodedPath.trimEnd('/') + "/").build().toString()
         }
-        fun from(session: Session) = HttpProductApi(normalizeBase(session.baseUrl).toHttpUrl(), session.cookies)
+        fun from(session: Session, bearer: BearerTokens? = null): HttpProductApi {
+            require(session.oidc == null || bearer != null) { "统一登录需要有效的令牌提供方。" }
+            return HttpProductApi(normalizeBase(session.baseUrl).toHttpUrl(), if (bearer != null) emptyList() else session.cookies, bearer)
+        }
         // Only synthetic loopback test fixtures bypass the production HTTPS requirement.
-        internal fun fixture(base: HttpUrl) = HttpProductApi(base, emptyList())
+        internal fun fixture(base: HttpUrl, bearer: BearerTokens? = null) = HttpProductApi(base, emptyList(), bearer)
         private fun encode(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
         private fun sha256(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     }

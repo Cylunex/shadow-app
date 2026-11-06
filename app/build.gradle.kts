@@ -8,10 +8,11 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.shadow.app"
+        manifestPlaceholders["appAuthRedirectScheme"] = "com.shadow.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 20
-        versionName = "0.10.0"
+        versionCode = 21
+        versionName = "0.11.0"
     }
     buildFeatures { compose = true }
     testOptions { unitTests.isIncludeAndroidResources = true }
@@ -22,6 +23,7 @@ android {
 }
 kotlin { jvmToolchain(17) }
 dependencies {
+    implementation("net.openid:appauth:0.11.1")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation(project(":bot-core")) { exclude(group = "org.json", module = "json") }
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))

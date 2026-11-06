@@ -66,8 +66,9 @@ class BotRepositoryTest {
             if (loginExpired) throw ApiFailure(401, "expired")
             return Handshake(generation, listOf(BotRole("losna", "main:owner:losna", "Losna"), BotRole("doll", "main:owner:doll", "Doll")), setOf("inbox", "workDetails", "artifactText", "attachments", "messageContext"), epoch)
         }
+        var beforeSnapshot: () -> Unit = {}
         override suspend fun snapshot(entryId: String): Snapshot {
-            reads++
+            beforeSnapshot(); reads++
             return Snapshot(generation, "main:owner:$entryId", if (entryId == "losna") rows.toList() else emptyList(), emptyList(), cursor, historyCursor, epoch)
         }
         override suspend fun events(after: Long) = Events(generation, cursor, after < cursor, reset, false)
@@ -333,6 +334,18 @@ class BotRepositoryTest {
         api.historyError = ApiFailure(409, "withdrawn"); repo.searchMessages("anchor", more = true)
         assertTrue(repo.state.value.searchResults.isEmpty()); assertNull(repo.state.value.searchCursor)
         assertFalse(repo.state.value.searchDone)
+    }
+
+    @Test fun anOldLoginCannotOverwriteTheNewSessionCacheOrReuseItsOfflineMessages() = runBlocking<Unit> {
+        val store = Store(); val api = Api()
+        store.saved = store.saved.copy(session = store.saved.session!!.copy(id = "login-one"))
+        val first = BotRepository(api, store); first.refresh(); first.select("losna"); first.send("old account message")
+        assertEquals("login-one", store.cache!!.sessionId)
+        api.beforeSnapshot = { store.saved = store.saved.copy(session = store.saved.session!!.copy(id = "login-two")) }
+        val oldCache = store.cache; first.refresh(); assertEquals(oldCache, store.cache)
+        api.handshakeError = IOException("offline")
+        val second = BotRepository(api, store); second.refresh()
+        assertTrue(second.state.value.messages.isEmpty()); assertTrue(second.state.value.roles.isEmpty())
     }
 
 }

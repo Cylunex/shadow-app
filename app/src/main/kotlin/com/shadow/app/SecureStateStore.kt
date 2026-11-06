@@ -30,7 +30,7 @@ class SecureStateStore(context: Context) : StateStore {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
     }
-    @Synchronized override fun read(): SavedState {
+    override fun read(): SavedState = synchronized(sessionLock) {
         if (!file.baseFile.exists() && !File(file.baseFile.path + ".bak").exists()) return SavedState()
         val bytes = file.readFully()
         require(bytes.size > 28) { "本地会话文件损坏，请保留原文件后恢复。" }
@@ -38,9 +38,11 @@ class SecureStateStore(context: Context) : StateStore {
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
         return StateCodec.decode(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8))
     }
-    @Synchronized override fun write(state: SavedState) {
+    override fun write(state: SavedState) = synchronized(sessionLock) {
         writeEncrypted(file, StateCodec.encode(state).toByteArray(Charsets.UTF_8))
     }
+    override fun update(change: (SavedState) -> SavedState): SavedState = synchronized(sessionLock) { val current = read(); change(current).also { if (it != current) write(it) } }
+    companion object { private val sessionLock = Any() }
     private fun writeEncrypted(target: AtomicFile, plaintext: ByteArray) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
@@ -49,7 +51,7 @@ class SecureStateStore(context: Context) : StateStore {
         try { stream.write(bytes); target.finishWrite(stream) } catch (error: Exception) { target.failWrite(stream); throw error }
     }
     @Synchronized fun readPrivate(name: String): String? {
-        require(name in setOf("notifications", "chat-cache", "read-marks"))
+        require(name in setOf("notifications", "chat-cache", "read-marks", "oidc-login"))
         val target = AtomicFile(File(root, "$name.enc"))
         if (!target.baseFile.exists()) return null
         val bytes = target.readFully()
@@ -58,7 +60,7 @@ class SecureStateStore(context: Context) : StateStore {
         return String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
     }
     @Synchronized fun writePrivate(name: String, text: String) {
-        require(name in setOf("notifications", "chat-cache", "read-marks"))
+        require(name in setOf("notifications", "chat-cache", "read-marks", "oidc-login"))
         writeEncrypted(AtomicFile(File(root, "$name.enc")), text.toByteArray(Charsets.UTF_8))
     }
     @Synchronized override fun markRead(entryId: String, messageId: String, sequence: Long) {

@@ -51,6 +51,8 @@
 
 0.9.0 已补齐人格卡复制／移除与部分 JSON 文件交换，支持边界见[人格卡文件说明](bot-persona-files.md)。Losna 升级至 DSH 0.2.2-rc.1 后，临时正文改订阅原生 `agent/assistant-stream` 帧，仍只展示 text-delta；下面验证数字与未完成清单是 0.8.0 当时状态。
 
+0.11.0 已实现可选统一 OIDC 与自动续期；生产仍待配置与真实登录验收，见[统一登录](bot-unified-login.md)。
+
 ## 验证与未完成范围
 
 - Kotlin 核心与实际 Losna HTTP／Life CLI 合成集成共 25 项通过；Android 单元／布局 14 项通过，Kotlin 编译与 Debug Lint 通过。

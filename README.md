@@ -18,6 +18,7 @@ Android Kotlin / Compose；JDK 17、Android SDK 36。`app` 提供原生界面和
 
 - [Bot 日常体验与逐项设计参考](docs/bot-everyday-experience.md)
 - [历史搜索定位与前后文](docs/bot-history-context.md)
+- [统一 OIDC 登录与接入边界](docs/bot-unified-login.md)
 
 - [Bot 黑色界面与 Life 通用附件](docs/bot-dark-ui-and-attachments.md)
 

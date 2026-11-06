@@ -11,7 +11,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
-import com.shadow.bot.HttpProductApi
+import com.shadow.bot.sameAccount
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -40,7 +40,7 @@ class BotNotificationWorker(context: Context, parameters: WorkerParameters) : Co
         val store = SecureStateStore(context)
         val session = try { store.read().session } catch (_: Exception) { return Result.failure() } ?: return Result.success()
         return try {
-            val api = HttpProductApi.from(session)
+            val api = authenticatedApi(context, store, session)
             val hello = api.handshake()
             val inbox = api.inbox()
             if (hello.generation != inbox.generation) return Result.retry()
@@ -60,7 +60,7 @@ class BotNotificationWorker(context: Context, parameters: WorkerParameters) : Co
                 val read = readMarks.optJSONObject(item.entryId)
                 val kind = notificationKind(item, old.optString("message"), old.optLong("workSequence"), read?.optString("message"), read?.optLong("sequence") ?: 0) ?: continue
                 // Recheck session and opt-in immediately before posting; never include private message text.
-                if (store.read().session != session || !BackgroundChecks.enabled(context)) return Result.success()
+                if (store.read().session?.let { it.id == session.id && it.sameAccount(session) } != true || !BackgroundChecks.enabled(context)) return Result.success()
                 val intent = Intent(context, MainActivity::class.java).putExtra("bot-entry", item.entryId)
                     .setAction("com.shadow.app.OPEN.${item.entryId}").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 val content = PendingIntent.getActivity(context, item.entryId.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -69,10 +69,15 @@ class BotNotificationWorker(context: Context, parameters: WorkerParameters) : Co
                     .setContentText(if (kind == "message") "伙伴有新回复，打开聊天查看。" else "事项有新进展，打开聊天查看。")
                     .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setAutoCancel(true).setOnlyAlertOnce(true).setContentIntent(content).build())
             }
-            if (store.read().session == session && BackgroundChecks.enabled(context)) store.writePrivate("notifications", JSONObject().put("server", session.baseUrl).put("epoch", hello.memoryEpoch).put("entries", next).toString())
+            if (store.read().session?.let { it.id == session.id && it.sameAccount(session) } == true && BackgroundChecks.enabled(context)) store.writePrivate("notifications", JSONObject().put("server", session.baseUrl).put("epoch", hello.memoryEpoch).put("entries", next).toString())
             Result.success()
         } catch (error: kotlinx.coroutines.CancellationException) { throw error }
-        catch (error: com.shadow.bot.ApiFailure) { if (error.status in listOf(401, 403)) Result.success() else Result.retry() }
+        catch (error: com.shadow.bot.ApiFailure) {
+            if (error.status in listOf(401, 403)) {
+                if (store.read().session?.id == session.id) { store.clearCache(); context.getSystemService(NotificationManager::class.java).cancelAll() }
+                Result.success()
+            } else Result.retry()
+        }
         catch (_: Exception) { Result.retry() }
     }
 }

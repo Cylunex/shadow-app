@@ -96,4 +96,22 @@ class HttpProductApiTest {
         }
     }
 
+    @Test fun nativeBearerAppliesToJsonAndFilesWithoutRedirectOrWriteReplay() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            var calls = 0
+            val api = HttpProductApi.fixture(server.url("/dsh/"), BearerTokens { calls++; "synthetic-access" })
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setHeader("Set-Cookie", "must-not-mix=one; Path=/").setBody("""{"issuer":"https://auth.example.com","sub":"owner"}"""))
+            assertEquals("owner", api.nativeIdentity().getString("sub"))
+            val first = server.takeRequest(); assertEquals("Bearer synthetic-access", first.getHeader("Authorization")); assertNull(first.getHeader("Cookie"))
+            server.enqueue(MockResponse().setResponseCode(401))
+            try { api.send(PendingCommand("stable-id", "losna", "hello", 1), "host"); fail() } catch (error: ApiFailure) { assertEquals(401, error.status) }
+            val write = server.takeRequest(); assertEquals("Bearer synthetic-access", write.getHeader("Authorization")); assertNull(write.getHeader("Cookie"))
+            assertEquals(2, server.requestCount)
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "https://other.example.com/"))
+            val artifact = Artifact("empty", "empty.txt", 0, "text/plain", true, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", true)
+            try { api.artifactContent(artifact, "losna"); fail() } catch (error: ApiFailure) { assertEquals(302, error.status) }
+            assertEquals("Bearer synthetic-access", server.takeRequest().getHeader("Authorization")); assertEquals(3, server.requestCount); assertEquals(3, calls)
+        }
+    }
+
 }

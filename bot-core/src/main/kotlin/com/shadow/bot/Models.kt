@@ -50,7 +50,11 @@ data class WorkDetail(val work: Work, val plan: List<PlanStep>, val runs: List<W
 data class ArtifactText(val id: String, val workId: String, val name: String, val text: String, val truncated: Boolean)
 data class PersonaCard(val id: String, val name: String, val displayName: String, val instructions: String, val inheritIdentity: Boolean)
 data class PersonaSettings(val entryId: String, val revision: Int, val active: String, val contactEnabled: Boolean, val cards: List<PersonaCard>)
-data class Session(val baseUrl: String, val cookies: List<String>)
+data class OidcSession(val issuer: String, val subject: String, val clientId: String, val name: String, val authState: String)
+data class Session(val baseUrl: String, val cookies: List<String>, val oidc: OidcSession? = null, val id: String = "")
+fun Session.sameAccount(other: Session): Boolean = baseUrl == other.baseUrl &&
+    (oidc == null && other.oidc == null || oidc != null && other.oidc != null && oidc.issuer == other.oidc.issuer && oidc.subject == other.oidc.subject)
+fun Session.canKeepData(other: Session): Boolean = sameAccount(other) || baseUrl == other.baseUrl && oidc == null && other.oidc != null
 data class AttachmentDraft(val id: String, val uri: String = "", val name: String = "正在读取附件…", val status: String = "queued",
     val error: String? = null, val uploaded: Attachment? = null, val mediaType: String = "application/octet-stream", val localReady: Boolean = false)
 data class SavedState(val session: Session? = null, val pending: List<PendingCommand> = emptyList(),
@@ -59,6 +63,7 @@ data class SavedState(val session: Session? = null, val pending: List<PendingCom
 interface StateStore {
     fun read(): SavedState
     fun write(state: SavedState)
+    fun update(change: (SavedState) -> SavedState): SavedState = change(read()).also(::write)
     fun markRead(entryId: String, messageId: String, sequence: Long) {}
     fun readCache(): OfflineCache? = null
     fun writeCache(cache: OfflineCache) {}
@@ -70,8 +75,10 @@ internal fun JSONObject.string(key: String) = if (isNull(key)) "" else optString
 
 object StateCodec {
     fun encode(state: SavedState): String = JSONObject().apply {
-        put("version", 4)
-        state.session?.let { put("session", JSONObject().put("baseUrl", it.baseUrl).put("cookies", JSONArray(it.cookies))) }
+        put("version", 5)
+        state.session?.let { session -> put("session", JSONObject().put("baseUrl", session.baseUrl).put("cookies", JSONArray(session.cookies)).put("id", session.id).apply {
+            session.oidc?.let { put("oidc", JSONObject().put("issuer", it.issuer).put("subject", it.subject).put("clientId", it.clientId).put("name", it.name).put("authState", it.authState)) }
+        }) }
         put("pending", JSONArray(state.pending.map { JSONObject().put("id", it.id).put("entryId", it.entryId).put("text", it.text).put("createdAt", it.createdAt).put("action", it.action).put("workId", it.workId).put("expectedVersion", it.expectedVersion).put("memoryId", it.memoryId).put("attachments", JSONArray(it.attachments.map(::attachmentJson))) }))
         put("drafts", JSONObject(state.drafts)); put("workDrafts", JSONObject(state.workDrafts))
         put("attachmentDrafts", JSONObject().apply { state.attachmentDrafts.forEach { (entry, drafts) ->
@@ -82,10 +89,12 @@ object StateCodec {
     }.toString()
     fun decode(raw: String): SavedState {
         val json = JSONObject(raw)
-        require(json.getInt("version") in 1..4) { "本地资料版本不受支持" }
+        require(json.getInt("version") in 1..5) { "本地资料版本不受支持" }
         val session = json.optJSONObject("session")?.let { row ->
             val cookies = row.getJSONArray("cookies")
-            Session(row.getString("baseUrl"), (0 until cookies.length()).map(cookies::getString))
+            Session(row.getString("baseUrl"), (0 until cookies.length()).map(cookies::getString), row.optJSONObject("oidc")?.let {
+                OidcSession(it.getString("issuer"), it.getString("subject"), it.getString("clientId"), it.getString("name"), it.getString("authState"))
+            }, row.optString("id", ""))
         }
         return SavedState(session, json.getJSONArray("pending").objects().map {
             PendingCommand(it.getString("id"), it.getString("entryId"), it.getString("text"), it.getLong("createdAt"), it.optString("action", "message"),

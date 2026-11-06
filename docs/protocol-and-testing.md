@@ -1,6 +1,6 @@
 # 协议与开发验证
 
-2026-11-06 增量：当前源码 0.10.0（20），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)、[人格卡文件](bot-persona-files.md)与[历史定位](bot-history-context.md)。
+2026-11-06 增量：当前源码 0.11.0（21），尚未发布；原发布记录属于 0.7.x。新增能力与验证见[日常体验设计](bot-everyday-experience.md)、[人格卡文件](bot-persona-files.md)、[历史定位](bot-history-context.md)与[统一登录](bot-unified-login.md)。
 
 ## 工程
 
@@ -12,10 +12,12 @@
 
 ## 已接入的 Product v1
 
-设 DSH 根地址为 `https://example.com/dsh/`。登录请求为根地址加 `token` 参数，接收既有 DSH 签名 Cookie；不跟随跳转，不调用新账户接口。接口前缀为该根地址下 `losna/agent/api/`。
+设 DSH 根地址为 `https://example.com/dsh/`。统一 OIDC 登录和兼容口令连接并存，详情见[统一登录](bot-unified-login.md)。兼容登录请求为根地址加 `token` 参数，接收既有 DSH 签名 Cookie；不跟随跳转，不调用新账户接口。接口前缀为该根地址下 `losna/agent/api/`。
 
 | 方法与路径 | 用途 |
 | --- | --- |
+| GET auth/native/config | 同一 Host／Origin 下公开的原生 OIDC 参数，不含本人绑定值 |
+| GET auth/me | 已验证的 OIDC 身份；需要原生 bearer |
 | GET handshake | 协议版本、代次、能力、联系人与会话 ID |
 | GET snapshot?entryId=… | 最近 200 条消息和真实事项状态；entryWorks 按入口先过滤再取最近 100 项 |
 | GET history?entryId=…&before=…&query=… | 按入口和 memory epoch 分页／搜索有效历史 |
@@ -38,7 +40,7 @@
 
 除附件二进制上传外，写入使用 JSON 与 `X-Losna-Request: 1`。服务端继续经过既有 DSH admission / Host / Origin 检查。新角色仅保存 id 与名字，复用主模型配置，QQ 禁用；不生成凭据、职业模板、独立主脑或记忆库。人格卡独立于 entry，会话 ID 不随卡片切换而变化。
 
-本机待发送队列最多 20 条，单条最多 4000 UTF-16 字符；写盘成功后才发请求。回执未知时保留原 id、entryId、action、text、workId 和 expectedVersion，不自动重放旧意图。409 保留原记录，核对后移除再提交新意图，不自动刷新版本重试。状态文件写入版本 4，保存待发引用与草稿，兼容读取版本 1–3。换服务器或断开本机前先处理待发记录。草稿不进入系统 saved state，改为加密原子保存；已读取的附件原件另存加密文件。排队与消费草稿在同一次提交完成。待确认消息、事项与记忆命令保留原编号和目标版本。
+本机待发送队列最多 20 条，单条最多 4000 UTF-16 字符；写盘成功后才发请求。回执未知时保留原 id、entryId、action、text、workId 和 expectedVersion，不自动重放旧意图。409 保留原记录，核对后移除再提交新意图，不自动刷新版本重试。状态文件写入版本 5，保存会话、待发引用与草稿，兼容读取版本 1–4；OIDC AuthState 与旧 Cookie 均在原加密边界内。换服务器或断开本机前先处理待发记录。草稿不进入系统 saved state，改为加密原子保存；已读取的附件原件另存加密文件。排队与消费草稿在同一次提交完成。待确认消息、事项与记忆命令保留原编号和目标版本。
 
 Android SEND / PROCESS_TEXT 的文字最多 4000 字符，选择伙伴后追加到已有草稿，合并超长则提示；SEND / SEND_MULTIPLE 还接收最多 8 个 content URI 附件，上传完成后留在草稿，不自动发送。
 

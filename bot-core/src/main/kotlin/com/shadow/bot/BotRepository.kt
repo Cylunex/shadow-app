@@ -21,6 +21,10 @@ data class BotState(
 /** Serializes user writes with snapshot/event refresh; cursors are never shared between contacts. */
 class BotRepository(private val api: ProductApi, private val store: StateStore) {
     private val mutex = Mutex()
+    private val boundSession = store.read().session
+    private fun currentSession(session: Session? = store.read().session) = session?.id == boundSession?.id &&
+        (session == null && boundSession == null || session != null && boundSession != null && session.sameAccount(boundSession))
+    private fun cacheForSession() = store.readCache()?.takeIf { it.server == boundSession?.baseUrl && it.sessionId == boundSession.id }
     private val mutable = MutableStateFlow(BotState(pending = store.read().pending))
     val state = mutable.asStateFlow()
     private var generation: String? = null
@@ -77,6 +81,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     }
 
     private suspend fun operation(silent: Boolean = false, block: suspend () -> Unit) = mutex.withLock {
+        if (!currentSession()) return@withLock
         if (!silent) mutable.value = mutable.value.copy(busy = true, error = null)
         try { block() }
         catch (error: CancellationException) { throw error }
@@ -93,7 +98,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
                 store.clearCache(); olderMessages = emptyList(); olderCursor = null
                 mutable.value = mutable.value.copy(messages = emptyList(), roles = emptyList(), works = emptyList(), searchResults = emptyList(), searchCursor = null, historyCursor = null, workDetail = null, artifactText = null)
             } else if (error !is ApiFailure && error !is IllegalArgumentException) {
-                val cache = runCatching { store.readCache() }.getOrNull()?.takeIf { it.server == store.read().session?.baseUrl }
+                val cache = runCatching { cacheForSession() }.getOrNull()
                 if (cache != null) mutable.value = mutable.value.copy(connected = true, offline = true, cachedAt = cache.savedAt,
                     roles = if (mutable.value.roles.isEmpty()) cache.roles else mutable.value.roles,
                     messages = if (mutable.value.messages.isEmpty() && mutable.value.selected == cache.entryId) cache.messages else mutable.value.messages)
@@ -106,11 +111,12 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
 
     private suspend fun refreshLocked(refreshDetails: Boolean = true) {
         val hello = api.handshake()
+        if (!currentSession()) return
         if (generation != null && generation != hello.generation) {
             clearMessageContext()
             mutable.value = mutable.value.copy(searchResults = emptyList(), searchCursor = null, searchDone = false)
         }
-        val cache = store.readCache()
+        val cache = cacheForSession()
         if (cache != null && cache.epoch != hello.memoryEpoch || memoryEpoch >= 0 && memoryEpoch != hello.memoryEpoch) {
             clearMessageContext()
             store.clearCache(); olderMessages = emptyList(); olderCursor = null
@@ -137,6 +143,7 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
         }
         if (selected != null) {
             val snapshot = api.snapshot(selected)
+            if (!currentSession()) return
             if (snapshot.generation != hello.generation) { generation = null; throw ApiFailure(409, "服务正在重启，请刷新后继续。") }
             check(snapshot.conversationId == hello.roles.first { it.id == selected }.conversationId)
             nextCursor = snapshot.cursor
@@ -154,16 +161,17 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
             works = snapshot.works.filter { it.entryId == selected }
             runCatching { store.markRead(selected, snapshot.messages.lastOrNull()?.id.orEmpty(), snapshot.cursor) }
         }
+        if (!currentSession()) return
         generation = hello.generation
         cursor = nextCursor
         mutable.value = mutable.value.copy(connected = true, needsLogin = false, roles = roles,
             capabilities = hello.capabilities, selected = selected, messages = messages, works = works, historyCursor = olderCursor, syncIssue = null, offline = false, cachedAt = 0)
         if (selected == null || "messageContext" !in hello.capabilities) clearMessageContext()
         runCatching {
-            val server = store.read().session?.baseUrl
+            val server = boundSession?.baseUrl
             if (server != null) {
-                val old = store.readCache()?.takeIf { it.server == server && it.epoch == hello.memoryEpoch }
-                val saved = OfflineCache(server, hello.memoryEpoch, System.currentTimeMillis(), roles, selected ?: old?.entryId, if (selected != null) messages.takeLast(200) else old?.messages.orEmpty())
+                val old = cacheForSession()?.takeIf { it.epoch == hello.memoryEpoch }
+                val saved = OfflineCache(server, hello.memoryEpoch, System.currentTimeMillis(), roles, selected ?: old?.entryId, if (selected != null) messages.takeLast(200) else old?.messages.orEmpty(), boundSession.id)
                 if (old?.copy(savedAt = saved.savedAt) != saved) store.writeCache(saved)
             }
         }
@@ -235,16 +243,19 @@ class BotRepository(private val api: ProductApi, private val store: StateStore) 
     suspend fun artifactContent(artifact: Artifact, entryId: String) = api.artifactContent(artifact, entryId)
     fun clearLiveReply() { mutable.value = mutable.value.copy(liveReply = null) }
     private fun persist(pending: List<PendingCommand>, consume: PendingCommand? = null) {
-        var saved = store.read().copy(pending = pending)
-        // Consuming the draft and queuing its command is one durable write.
-        // A killed process cannot restore both an already queued message and its sendable draft.
-        if (consume != null) saved = if (consume.action == "message") saved.copy(
-            drafts = if (saved.drafts[consume.entryId]?.trim() == consume.text) saved.drafts - consume.entryId else saved.drafts,
-            attachmentDrafts = saved.attachmentDrafts + (consume.entryId to saved.attachmentDrafts[consume.entryId].orEmpty()
-                .filterNot { draft -> consume.attachments.any { it.id == draft.id } }))
-        else saved.copy(workDrafts = if (consume.action == "work.resume" && saved.workDrafts[consume.workId]?.trim() == consume.text)
-            saved.workDrafts - requireNotNull(consume.workId) else saved.workDrafts)
-        store.write(saved) // disk commit precedes network and UI acknowledgement
+        store.update { current ->
+            check(currentSession(current.session)) { "连接已变更，请在当前连接重试。" }
+            var saved = current.copy(pending = pending)
+            // Consuming the draft and queuing its command is one durable write.
+            // A killed process cannot restore both an already queued message and its sendable draft.
+            if (consume != null) saved = if (consume.action == "message") saved.copy(
+                drafts = if (saved.drafts[consume.entryId]?.trim() == consume.text) saved.drafts - consume.entryId else saved.drafts,
+                attachmentDrafts = saved.attachmentDrafts + (consume.entryId to saved.attachmentDrafts[consume.entryId].orEmpty()
+                    .filterNot { draft -> consume.attachments.any { it.id == draft.id } }))
+            else saved.copy(workDrafts = if (consume.action == "work.resume" && saved.workDrafts[consume.workId]?.trim() == consume.text)
+                saved.workDrafts - requireNotNull(consume.workId) else saved.workDrafts)
+            saved
+        } // disk commit precedes network and UI acknowledgement
         mutable.value = mutable.value.copy(pending = pending)
     }
     suspend fun uploadAttachment(id: String, entryId: String, name: String, mediaType: String, bytes: ByteArray): Attachment {

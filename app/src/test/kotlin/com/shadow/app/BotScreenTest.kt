@@ -216,4 +216,15 @@ class BotScreenTest {
         compose.onNodeWithText(rows[0].text).assertDoesNotExist()
     }
 
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun unifiedLoginIsPrimaryAndLegacySecretsStayCollapsed() {
+        val vm = model()
+        compose.setContent { BotTheme { BotScreen(ScreenState(destination = Destination.Settings, baseUrl = "https://example.com/dsh/"), vm) } }
+        compose.onNodeWithText("使用统一账号登录").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("当前启动口令").assertDoesNotExist()
+        screenshot("oidc-login-320")
+        compose.onNodeWithText("使用启动口令连接").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("当前启动口令"))
+        compose.onNodeWithText("当前启动口令").assertIsDisplayed()
+    }
+
 }

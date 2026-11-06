@@ -195,15 +195,31 @@ class MainActivity : ComponentActivity() {
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted ->
         notifications = granted; BackgroundChecks.configure(context, granted)
     }
+    val login = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+        vm.finishUnifiedLogin(result.resultCode == android.app.Activity.RESULT_OK)
+    }
+    var legacy by remember { mutableStateOf(false) }
     var address by rememberSaveable(state.baseUrl) { mutableStateOf(state.baseUrl) }
     // A launch token must never enter savedInstanceState or the persistent store.
     var token by remember { mutableStateOf("") }
     LazyColumn(contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Text("连接你的 Losna", style = MaterialTheme.typography.headlineSmall) }
-        item { Text("填写 DSH 根地址，包含已有的代理前缀。启动口令仅在本次登录使用。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        item { OutlinedTextField(address, { address = it }, label = { Text("DSH 地址") }, placeholder = { Text("https://example.com/dsh/") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+        item { Text("填写服务地址，通过浏览器登录你的统一账号。完成后会自动回到伙伴。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { OutlinedTextField(address, { address = it }, label = { Text("服务地址") }, placeholder = { Text("https://example.com/dsh/") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+        state.loginName?.let { name -> item { Text("统一登录 · $name", style = MaterialTheme.typography.bodyMedium) } }
+        item { Button(onClick = {
+            vm.beginUnifiedLogin(address)?.let { base ->
+                try { login.launch(Intent(context, OidcLoginActivity::class.java).putExtra("base", base)) }
+                catch (_: Exception) { vm.finishUnifiedLogin(false) }
+            }
+        }, enabled = !state.connecting && !state.storageError && !state.bot.busy && address.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+            Text(if (state.connecting) "正在登录…" else if (state.loginName != null) "重新登录" else "使用统一账号登录")
+        } }
+        item { TextButton(onClick = { legacy = !legacy }, enabled = !state.connecting) { Text(if (legacy) "收起口令连接" else "使用启动口令连接") } }
+        if (legacy) {
         item { OutlinedTextField(token, { token = it }, label = { Text("当前启动口令") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth()) }
         item { Button(onClick = { vm.connect(address, token); token = "" }, enabled = !state.connecting && !state.storageError && !state.bot.busy && address.isNotBlank() && token.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (state.connecting) "正在连接…" else "连接") } }
+        }
         item { Text("对话、工作和记忆由现有服务端保存。手机关闭后，伙伴仍可继续处理已接收的事项。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (state.baseUrl.isNotBlank()) item {
             Row(verticalAlignment = Alignment.CenterVertically) {
